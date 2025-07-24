@@ -1,0 +1,227 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for release'
+        required: true
+        default: 'v1.0.0'
+
+env:
+  GO_VERSION: '1.21'
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            suffix: ''
+            gui_binary: gamelauncher
+            console_binary: gamelauncher_console
+            cli_binary: gamelauncher_cli
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            suffix: '.exe'
+            gui_binary: gamelauncher.exe
+            console_binary: gamelauncher_console.exe
+            cli_binary: gamelauncher_cli.exe
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+
+    - name: Install Linux dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          gcc \
+          libc6-dev \
+          libgl1-mesa-dev \
+          libxcursor-dev \
+          libxi-dev \
+          libxinerama-dev \
+          libxrandr-dev \
+          libxxf86vm-dev \
+          libasound2-dev \
+          pkg-config
+
+    - name: Install Windows dependencies
+      if: matrix.os == 'windows-latest'
+      shell: pwsh
+      run: |
+        # TDM-GCC is already available on GitHub Actions Windows runners
+        Write-Host "Windows runner already has required dependencies"
+
+    - name: Cache Go modules
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Verify dependencies
+      run: go mod verify
+
+    - name: Run tests
+      run: |
+        go test -v ./...
+        go build -o test_paths${{ matrix.suffix }} test_paths.go
+        ./test_paths${{ matrix.suffix }}
+
+    - name: Build GUI version
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        CGO_ENABLED: 1
+      run: |
+        if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          go build -ldflags "-H windowsgui -s -w" -o ${{ matrix.gui_binary }} main.go
+        else
+          go build -ldflags "-s -w" -o ${{ matrix.gui_binary }} main.go
+        fi
+      shell: bash
+
+    - name: Build Console version
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        CGO_ENABLED: 0
+      run: go build -ldflags "-s -w" -o ${{ matrix.console_binary }} main_console.go
+
+    - name: Build CLI version
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        CGO_ENABLED: 0
+      run: go build -ldflags "-s -w" -o ${{ matrix.cli_binary }} main_console.go
+
+    - name: Create release package
+      run: |
+        mkdir -p release
+        if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          cp ${{ matrix.gui_binary }} release/
+          cp ${{ matrix.console_binary }} release/
+          cp ${{ matrix.cli_binary }} release/
+          cp README.md release/ 2>/dev/null || true
+          cd release
+          7z a -tzip ../gamelauncher-${{ matrix.goos }}-${{ matrix.goarch }}.zip *
+        else
+          cp ${{ matrix.gui_binary }} release/
+          cp ${{ matrix.console_binary }} release/
+          cp ${{ matrix.cli_binary }} release/
+          cp README.md release/ 2>/dev/null || true
+          chmod +x release/gamelauncher*
+          cd release
+          tar -czf ../gamelauncher-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz *
+        fi
+      shell: bash
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: gamelauncher-${{ matrix.goos }}-${{ matrix.goarch }}
+        path: |
+          gamelauncher-${{ matrix.goos }}-${{ matrix.goarch }}.*
+        retention-days: 30
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+
+    - name: List downloaded artifacts
+      run: find . -name "gamelauncher-*" -type f
+
+    - name: Get tag name
+      id: tag_name
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "tag_name=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+        else
+          echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.tag_name.outputs.tag_name }}
+        release_name: Game Launcher ${{ steps.tag_name.outputs.tag_name }}
+        body: |
+          ## Game Launcher Release ${{ steps.tag_name.outputs.tag_name }}
+          
+          ### Downloads
+          - **Windows**: `gamelauncher-windows-amd64.zip`
+          - **Linux**: `gamelauncher-linux-amd64.tar.gz`
+          
+          ### What's included
+          Each package contains:
+          - `gamelauncher` (GUI version)
+          - `gamelauncher_console` (Console version)
+          - `gamelauncher_cli` (CLI version)
+          - `README.md` (Documentation)
+          
+          ### Installation
+          1. Download the appropriate package for your platform
+          2. Extract the archive
+          3. Run the desired version of the application
+          
+          ### Requirements
+          - **Windows**: Windows 10 or later
+          - **Linux**: Modern Linux distribution with X11 or Wayland
+        draft: false
+        prerelease: false
+
+    - name: Upload Windows Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./gamelauncher-windows-amd64/gamelauncher-windows-amd64.zip
+        asset_name: gamelauncher-windows-amd64.zip
+        asset_content_type: application/zip
+
+    - name: Upload Linux Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./gamelauncher-linux-amd64/gamelauncher-linux-amd64.tar.gz
+        asset_name: gamelauncher-linux-amd64.tar.gz
+        asset_content_type: application/gzip
