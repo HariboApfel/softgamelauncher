@@ -27,16 +27,12 @@ jobs:
             goos: linux
             goarch: amd64
             suffix: ''
-            gui_binary: gamelauncher
-            console_binary: gamelauncher_console
-            cli_binary: gamelauncher_cli
+            binary: gamelauncher
           - os: windows-latest
             goos: windows
             goarch: amd64
             suffix: '.exe'
-            gui_binary: gamelauncher.exe
-            console_binary: gamelauncher_console.exe
-            cli_binary: gamelauncher_cli.exe
+            binary: gamelauncher.exe
 
     steps:
     - name: Checkout code
@@ -99,42 +95,23 @@ jobs:
         CGO_ENABLED: 1
       run: |
         if [ "${{ matrix.os }}" = "windows-latest" ]; then
-          go build -ldflags "-H windowsgui -s -w" -o ${{ matrix.gui_binary }} main.go
+          go build -ldflags "-H windowsgui -s -w" -o ${{ matrix.binary }} main.go
         else
-          go build -ldflags "-s -w" -o ${{ matrix.gui_binary }} main.go
+          go build -ldflags "-s -w" -o ${{ matrix.binary }} main.go
         fi
       shell: bash
-
-    - name: Build Console version
-      env:
-        GOOS: ${{ matrix.goos }}
-        GOARCH: ${{ matrix.goarch }}
-        CGO_ENABLED: 0
-      run: go build -ldflags "-s -w" -o ${{ matrix.console_binary }} main_console.go
-
-    - name: Build CLI version
-      env:
-        GOOS: ${{ matrix.goos }}
-        GOARCH: ${{ matrix.goarch }}
-        CGO_ENABLED: 0
-      run: go build -ldflags "-s -w" -o ${{ matrix.cli_binary }} main_console.go
 
     - name: Create release package
       run: |
         mkdir -p release
+        cp ${{ matrix.binary }} release/
+        cp README.md release/ 2>/dev/null || true
         if [ "${{ matrix.os }}" = "windows-latest" ]; then
-          cp ${{ matrix.gui_binary }} release/
-          cp ${{ matrix.console_binary }} release/
-          cp ${{ matrix.cli_binary }} release/
-          cp README.md release/ 2>/dev/null || true
+          chmod +x release/${{ matrix.binary }}
           cd release
           7z a -tzip ../gamelauncher-${{ matrix.goos }}-${{ matrix.goarch }}.zip *
         else
-          cp ${{ matrix.gui_binary }} release/
-          cp ${{ matrix.console_binary }} release/
-          cp ${{ matrix.cli_binary }} release/
-          cp README.md release/ 2>/dev/null || true
-          chmod +x release/gamelauncher*
+          chmod +x release/${{ matrix.binary }}
           cd release
           tar -czf ../gamelauncher-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz *
         fi
@@ -191,14 +168,12 @@ jobs:
           ### What's included
           Each package contains:
           - `gamelauncher` (GUI version)
-          - `gamelauncher_console` (Console version)
-          - `gamelauncher_cli` (CLI version)
           - `README.md` (Documentation)
           
           ### Installation
           1. Download the appropriate package for your platform
           2. Extract the archive
-          3. Run the desired version of the application
+          3. Run the application
           
           ### Requirements
           - **Windows**: Windows 10 or later
