@@ -11,9 +11,9 @@ import (
 // TestBasicStructures tests that basic structures can be created
 func TestBasicStructures(t *testing.T) {
 	// Test game creation
-	game := models.NewGame("Test Game", "/path/to/game.exe", "/path/to/folder")
-	if game.Name != "Test Game" {
-		t.Errorf("Expected game name 'Test Game', got '%s'", game.Name)
+	testGame := models.NewGame("Test Game", "/path/to/game.exe", "/path/to/folder")
+	if testGame.Name != "Test Game" {
+		t.Errorf("Expected game name 'Test Game', got '%s'", testGame.Name)
 	}
 	
 	// Test settings creation
@@ -41,18 +41,18 @@ func TestBasicStructures(t *testing.T) {
 
 // TestGameOperations tests basic game operations
 func TestGameOperations(t *testing.T) {
-	game := models.NewGame("Test Game", "/path/to/game.exe", "/path/to/folder")
+	testGame := models.NewGame("Test Game", "/path/to/game.exe", "/path/to/folder")
 	
 	// Test update info
-	game.UpdateInfo("1.0.0")
-	if game.Version != "1.0.0" {
-		t.Errorf("Expected version '1.0.0', got '%s'", game.Version)
+	testGame.UpdateInfo("1.0.0")
+	if testGame.Version != "1.0.0" {
+		t.Errorf("Expected version '1.0.0', got '%s'", testGame.Version)
 	}
 	
 	// Test mark checked
-	originalTime := game.LastCheck
-	game.MarkChecked()
-	if game.LastCheck.Equal(originalTime) {
+	originalTime := testGame.LastCheck
+	testGame.MarkChecked()
+	if testGame.LastCheck.Equal(originalTime) {
 		t.Error("LastCheck should be updated when marking as checked")
 	}
 } 
