@@ -124,6 +124,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    env:
+      GH_TOKEN: ${{ github.token }}
     
     steps:
     - name: Checkout code
