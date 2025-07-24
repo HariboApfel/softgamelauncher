@@ -146,23 +146,19 @@ jobs:
 
     - name: Create Release
       id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.tag_name.outputs.tag_name }}
-        release_name: Game Launcher ${{ steps.tag_name.outputs.tag_name }}
-        body: |
-          ## Game Launcher Release ${{ steps.tag_name.outputs.tag_name }}
+      run: |
+        gh release create ${{ steps.tag_name.outputs.tag_name }} \
+          --title "Game Launcher ${{ steps.tag_name.outputs.tag_name }}" \
+          --notes "## Game Launcher Release ${{ steps.tag_name.outputs.tag_name }}
           
           ### Downloads
-          - **Windows**: `gamelauncher-windows-amd64.zip`
-          - **Linux**: `gamelauncher-linux-amd64.tar.gz`
+          - **Windows**: \`gamelauncher-windows-amd64.zip\`
+          - **Linux**: \`gamelauncher-linux-amd64.tar.gz\`
           
           ### What's included
           Each package contains:
-          - `gamelauncher` (GUI version)
-          - `README.md` (Documentation)
+          - \`gamelauncher\` (GUI version)
+          - \`README.md\` (Documentation)
           
           ### Installation
           1. Download the appropriate package for your platform
@@ -171,26 +167,18 @@ jobs:
           
           ### Requirements
           - **Windows**: Windows 10 or later
-          - **Linux**: Modern Linux distribution with X11 or Wayland
-        draft: false
-        prerelease: false
+          - **Linux**: Modern Linux distribution with X11 or Wayland" \
+          --draft=false \
+          --prerelease=false
 
     - name: Upload Windows Release Asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./gamelauncher-windows-amd64/gamelauncher-windows-amd64.zip
-        asset_name: gamelauncher-windows-amd64.zip
-        asset_content_type: application/zip
+      run: |
+        gh release upload ${{ steps.tag_name.outputs.tag_name }} \
+          ./gamelauncher-windows-amd64/gamelauncher-windows-amd64.zip \
+          --clobber
 
     - name: Upload Linux Release Asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./gamelauncher-linux-amd64/gamelauncher-linux-amd64.tar.gz
-        asset_name: gamelauncher-linux-amd64.tar.gz
-        asset_content_type: application/gzip
+      run: |
+        gh release upload ${{ steps.tag_name.outputs.tag_name }} \
+          ./gamelauncher-linux-amd64/gamelauncher-linux-amd64.tar.gz \
+          --clobber
