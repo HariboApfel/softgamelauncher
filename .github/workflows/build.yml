@@ -3,6 +3,8 @@ name: Build
 on:
   push:
     branches: [ main, master ]
+    tags:
+      - 'v*.*.*'  # Trigger on version tags like v1.0.0
   workflow_dispatch:
     inputs:
       tag_name:
@@ -124,7 +126,7 @@ jobs:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     env:
       GH_TOKEN: ${{ github.token }}
     
@@ -141,7 +143,12 @@ jobs:
     - name: Get tag name
       id: tag_name
       run: |
-        echo "tag_name=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "tag_name=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+        else
+          # Extract tag name from git ref (refs/tags/v1.0.0 -> v1.0.0)
+          echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        fi
 
     - name: Create Release
       id: create_release
