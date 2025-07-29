@@ -288,6 +288,9 @@ func (mw *MainWindow) createToolbar() *widget.Toolbar {
 		widget.NewToolbarAction(theme.ComputerIcon(), func() {
 			mw.addSelectedGameToSteam()
 		}),
+		widget.NewToolbarAction(theme.DocumentSaveIcon(), func() {
+			mw.cleanupSteamShortcuts()
+		}),
 		widget.NewToolbarSeparator(),
 		widget.NewToolbarAction(theme.SettingsIcon(), func() {
 			mw.showSettings()
@@ -1225,6 +1228,37 @@ func (mw *MainWindow) redownloadImageForGame(game *models.Game) {
 			}
 		}
 	}
+}
+
+// cleanupSteamShortcuts cleans up duplicate Steam shortcuts
+func (mw *MainWindow) cleanupSteamShortcuts() {
+	// Show confirmation dialog
+	dialog.ShowConfirm("Clean Up Steam Shortcuts",
+		"This will remove duplicate Steam shortcuts and update existing ones to use the new format.\n\nThis operation is safe and will preserve your game library.\n\nProceed with cleanup?",
+		func(confirm bool) {
+			if !confirm {
+				return
+			}
+
+			// Show progress dialog
+			progressDialog := dialog.NewProgressInfinite("Cleaning Up", "Cleaning up duplicate Steam shortcuts...", mw.window)
+			progressDialog.Show()
+
+			// Run cleanup in background
+			go func() {
+				err := mw.steamManager.CleanupDuplicateShortcuts()
+
+				// Close progress dialog
+				progressDialog.Hide()
+
+				if err != nil {
+					dialog.ShowError(fmt.Errorf("failed to cleanup Steam shortcuts: %w", err), mw.window)
+				} else {
+					dialog.ShowInformation("Cleanup Complete",
+						"Successfully cleaned up duplicate Steam shortcuts!\n\nNote: Steam must be restarted to see changes.", mw.window)
+				}
+			}()
+		}, mw.window)
 }
 
 // addSelectedGameToSteam adds the currently selected game to Steam as a non-Steam shortcut

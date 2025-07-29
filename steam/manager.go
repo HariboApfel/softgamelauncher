@@ -82,6 +82,76 @@ func (m *Manager) AddGameToSteam(game *models.Game) error {
 	return nil
 }
 
+// CleanupDuplicateShortcuts removes duplicate shortcuts from Steam based on game names
+func (m *Manager) CleanupDuplicateShortcuts() error {
+	// Find Steam installation
+	steamPath, err := m.findSteamPath()
+	if err != nil {
+		return fmt.Errorf("failed to find Steam installation: %w", err)
+	}
+
+	// Find user data directory
+	userDataPath, err := m.findUserDataPath(steamPath)
+	if err != nil {
+		return fmt.Errorf("failed to find Steam user data: %w", err)
+	}
+
+	shortcutsPath := filepath.Join(userDataPath, "config", "shortcuts.vdf")
+	return m.cleanupDuplicatesInFile(shortcutsPath)
+}
+
+// cleanupDuplicatesInFile removes duplicate shortcuts from the shortcuts.vdf file
+func (m *Manager) cleanupDuplicatesInFile(shortcutsPath string) error {
+	// Read existing shortcuts
+	shortcuts, err := m.readShortcutsFile(shortcutsPath)
+	if err != nil {
+		// If file doesn't exist, nothing to clean
+		return nil
+	}
+
+	// Track seen games by normalized name
+	seenGames := make(map[string]*SteamShortcut)
+	var cleanedShortcuts []*SteamShortcut
+
+	for _, shortcut := range shortcuts {
+		normalizedName := m.normalizeName(shortcut.AppName)
+
+		if existing, found := seenGames[normalizedName]; found {
+			// Duplicate found, keep the one with the newer AppID format (name-only based)
+			newAppID := m.generateAppID(shortcut.AppName, shortcut.Exe)
+			existingNewAppID := m.generateAppID(existing.AppName, existing.Exe)
+
+			if shortcut.AppID == newAppID {
+				// This shortcut uses the new AppID format, replace the existing one
+				seenGames[normalizedName] = shortcut
+				// Update the shortcut in the cleaned list
+				for i, cs := range cleanedShortcuts {
+					if cs == existing {
+						cleanedShortcuts[i] = shortcut
+						break
+					}
+				}
+			} else if existing.AppID == existingNewAppID {
+				// Existing shortcut already uses new format, skip this duplicate
+				continue
+			} else {
+				// Neither uses new format, keep the first one and update its AppID
+				existing.AppID = existingNewAppID
+				continue
+			}
+		} else {
+			// First time seeing this game
+			// Update AppID to use new format
+			shortcut.AppID = m.generateAppID(shortcut.AppName, shortcut.Exe)
+			seenGames[normalizedName] = shortcut
+			cleanedShortcuts = append(cleanedShortcuts, shortcut)
+		}
+	}
+
+	// Write cleaned shortcuts back to file
+	return m.writeShortcutsFile(shortcutsPath, cleanedShortcuts)
+}
+
 // CheckGameExistsInSteam checks if a game already exists in Steam as a shortcut
 func (m *Manager) CheckGameExistsInSteam(game *models.Game) (bool, error) {
 	// Find Steam installation
@@ -313,21 +383,26 @@ func (m *Manager) addShortcutToFile(shortcutsPath string, shortcut *SteamShortcu
 		}
 
 		// Secondary check: same normalized name
-		// This provides additional safety for games that might have been added
-		// before the AppID generation change
+		// This catches shortcuts created with the old AppID system
 		existingNormalizedName := m.normalizeName(existing.AppName)
 		if existingNormalizedName == normalizedName {
 			existingIndex = i
+			// Update the existing shortcut's AppID to use the new format
+			existing.AppID = shortcut.AppID
 			break
 		}
 	}
 
 	if existingIndex >= 0 {
-		// Update existing shortcut with new settings
+		// Update existing shortcut with new settings but preserve some fields
+		existingShortcut := shortcuts[existingIndex]
+		shortcut.LastPlayTime = existingShortcut.LastPlayTime // Preserve play time
 		shortcuts[existingIndex] = shortcut
+		log.Printf("Updated existing Steam shortcut: %s (AppID: %d)", shortcut.AppName, shortcut.AppID)
 	} else {
 		// Add new shortcut
 		shortcuts = append(shortcuts, shortcut)
+		log.Printf("Added new Steam shortcut: %s (AppID: %d)", shortcut.AppName, shortcut.AppID)
 	}
 
 	// Write shortcuts back to file
