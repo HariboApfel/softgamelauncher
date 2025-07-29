@@ -126,7 +126,7 @@ jobs:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    # Remove the condition to run on every push
     env:
       GH_TOKEN: ${{ github.token }}
     
@@ -145,17 +145,34 @@ jobs:
       run: |
         if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
           echo "tag_name=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
-        else
+        elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
           # Extract tag name from git ref (refs/tags/v1.0.0 -> v1.0.0)
           echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        else
+          # Auto-generate version based on date and commit
+          DATE=$(date +'%Y.%m.%d')
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          echo "tag_name=v${DATE}-${SHORT_SHA}" >> $GITHUB_OUTPUT
         fi
 
     - name: Create Release
       id: create_release
       run: |
+        # Delete existing release if it exists (for development builds)
+        if [[ "${{ steps.tag_name.outputs.tag_name }}" == v20* ]]; then
+          gh release delete ${{ steps.tag_name.outputs.tag_name }} --yes 2>/dev/null || true
+          git tag -d ${{ steps.tag_name.outputs.tag_name }} 2>/dev/null || true
+          git push origin --delete ${{ steps.tag_name.outputs.tag_name }} 2>/dev/null || true
+        fi
+        
         gh release create ${{ steps.tag_name.outputs.tag_name }} \
           --title "Game Launcher ${{ steps.tag_name.outputs.tag_name }}" \
           --notes "## Game Launcher Release ${{ steps.tag_name.outputs.tag_name }}
+          
+          **Build Information:**
+          - Commit: [\`${{ github.sha }}\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+          - Branch: \`${{ github.ref_name }}\`
+          - Built: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
           
           ### Downloads
           - **Windows**: \`gamelauncher-windows-amd64.zip\`
@@ -175,7 +192,7 @@ jobs:
           - **Windows**: Windows 10 or later
           - **Linux**: Modern Linux distribution with X11 or Wayland" \
           --draft=false \
-          --prerelease=false
+          --prerelease=true
 
     - name: Upload Windows Release Asset
       run: |

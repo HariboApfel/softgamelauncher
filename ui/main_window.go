@@ -1255,8 +1255,8 @@ func (mw *MainWindow) addSelectedGameToSteam() {
 	}
 
 	message := fmt.Sprintf("%s '%s' %s Steam as a non-Steam shortcut?\n\nSteam App ID: %d\nSteam URL: %s\n\nNote: Steam must be restarted to see changes.",
-		strings.Title(actionText), selectedGame.Name, 
-		map[bool]string{true: "in", false: "to"}[exists], 
+		strings.Title(actionText), selectedGame.Name,
+		map[bool]string{true: "in", false: "to"}[exists],
 		appID, steamURL)
 
 	dialog.ShowConfirm(titleText, message,
@@ -1266,7 +1266,7 @@ func (mw *MainWindow) addSelectedGameToSteam() {
 			}
 
 			// Show progress dialog
-			progressText := fmt.Sprintf("%sing game %s Steam...", strings.Title(actionText), 
+			progressText := fmt.Sprintf("%sing game %s Steam...", strings.Title(actionText),
 				map[bool]string{true: "in", false: "to"}[exists])
 			progress := dialog.NewProgress(titleText, progressText, mw.window)
 			progress.Show()
@@ -1277,15 +1277,15 @@ func (mw *MainWindow) addSelectedGameToSteam() {
 				// Add game to Steam
 				err := mw.steamManager.AddGameToSteam(selectedGame)
 				if err != nil {
-					dialog.ShowError(fmt.Errorf("failed to %s game %s Steam: %w", actionText, 
+					dialog.ShowError(fmt.Errorf("failed to %s game %s Steam: %w", actionText,
 						map[bool]string{true: "in", false: "to"}[exists], err), mw.window)
 					return
 				}
 
 				// Show success dialog
 				successMessage := fmt.Sprintf("Successfully %sd '%s' %s Steam!\n\nApp ID: %d\nSteam URL: %s\n\nPlease restart Steam to see the changes in your library.",
-					actionText, selectedGame.Name, 
-					map[bool]string{true: "in", false: "to"}[exists], 
+					actionText, selectedGame.Name,
+					map[bool]string{true: "in", false: "to"}[exists],
 					appID, steamURL)
 
 				dialog.ShowInformation(fmt.Sprintf("%sd to Steam", strings.Title(actionText)), successMessage, mw.window)
