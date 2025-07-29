@@ -41,6 +41,10 @@ type SteamShortcut struct {
 	LastPlayTime        uint32
 	FlatpakAppID        string
 	Tags                []string
+
+	// Preserve unknown fields to prevent corruption
+	UnknownStrings map[string]string `json:"unknown_strings,omitempty"`
+	UnknownInts    map[string]uint32 `json:"unknown_ints,omitempty"`
 }
 
 // AddGameToSteam adds a game to Steam as a non-Steam shortcut
@@ -117,38 +121,83 @@ func (m *Manager) cleanupDuplicatesInFile(shortcutsPath string) error {
 		normalizedName := m.normalizeName(shortcut.AppName)
 
 		if existing, found := seenGames[normalizedName]; found {
-			// Duplicate found, keep the one with the newer AppID format (name-only based)
+			// Duplicate found, merge the data and keep the better one
 			newAppID := m.generateAppID(shortcut.AppName, shortcut.Exe)
 			existingNewAppID := m.generateAppID(existing.AppName, existing.Exe)
 
-			if shortcut.AppID == newAppID {
-				// This shortcut uses the new AppID format, replace the existing one
-				seenGames[normalizedName] = shortcut
-				// Update the shortcut in the cleaned list
+			var keepShortcut *SteamShortcut
+			var replaceInList bool = false
+
+			if shortcut.AppID == newAppID && existing.AppID != existingNewAppID {
+				// Current shortcut uses new format, existing doesn't - keep current
+				keepShortcut = shortcut
+				replaceInList = true
+			} else if existing.AppID == existingNewAppID && shortcut.AppID != newAppID {
+				// Existing shortcut uses new format, current doesn't - keep existing
+				keepShortcut = existing
+			} else {
+				// Both use same format or neither does - keep the one with more data/newer timestamp
+				if shortcut.LastPlayTime > existing.LastPlayTime ||
+					(shortcut.LastPlayTime == existing.LastPlayTime && len(shortcut.Tags) >= len(existing.Tags)) {
+					keepShortcut = shortcut
+					replaceInList = true
+				} else {
+					keepShortcut = existing
+				}
+			}
+
+			// Ensure the kept shortcut uses the correct AppID format
+			keepShortcut.AppID = newAppID
+
+			// Update in our tracking map
+			seenGames[normalizedName] = keepShortcut
+
+			// If we're replacing with a different shortcut, update the list
+			if replaceInList {
 				for i, cs := range cleanedShortcuts {
 					if cs == existing {
-						cleanedShortcuts[i] = shortcut
+						cleanedShortcuts[i] = keepShortcut
 						break
 					}
 				}
-			} else if existing.AppID == existingNewAppID {
-				// Existing shortcut already uses new format, skip this duplicate
-				continue
-			} else {
-				// Neither uses new format, keep the first one and update its AppID
-				existing.AppID = existingNewAppID
-				continue
 			}
 		} else {
 			// First time seeing this game
-			// Update AppID to use new format
-			shortcut.AppID = m.generateAppID(shortcut.AppName, shortcut.Exe)
+			// Ensure it uses the correct AppID format
+			correctAppID := m.generateAppID(shortcut.AppName, shortcut.Exe)
+			if shortcut.AppID != correctAppID {
+				// Create a copy with the correct AppID
+				correctedShortcut := &SteamShortcut{
+					AppID:               correctAppID,
+					AppName:             shortcut.AppName,
+					Exe:                 shortcut.Exe,
+					StartDir:            shortcut.StartDir,
+					Icon:                shortcut.Icon,
+					ShortcutPath:        shortcut.ShortcutPath,
+					LaunchOptions:       shortcut.LaunchOptions,
+					IsHidden:            shortcut.IsHidden,
+					AllowDesktopConfig:  shortcut.AllowDesktopConfig,
+					AllowOverlay:        shortcut.AllowOverlay,
+					OpenVR:              shortcut.OpenVR,
+					Devkit:              shortcut.Devkit,
+					DevkitGameID:        shortcut.DevkitGameID,
+					DevkitOverrideAppID: shortcut.DevkitOverrideAppID,
+					LastPlayTime:        shortcut.LastPlayTime,
+					FlatpakAppID:        shortcut.FlatpakAppID,
+					Tags:                shortcut.Tags,
+					UnknownStrings:      shortcut.UnknownStrings,
+					UnknownInts:         shortcut.UnknownInts,
+				}
+				shortcut = correctedShortcut
+			}
 			seenGames[normalizedName] = shortcut
 			cleanedShortcuts = append(cleanedShortcuts, shortcut)
 		}
 	}
 
 	// Write cleaned shortcuts back to file
+	log.Printf("Cleaned up shortcuts: %d → %d (removed %d duplicates)",
+		len(shortcuts), len(cleanedShortcuts), len(shortcuts)-len(cleanedShortcuts))
 	return m.writeShortcutsFile(shortcutsPath, cleanedShortcuts)
 }
 
@@ -315,6 +364,8 @@ func (m *Manager) createShortcutFromGame(game *models.Game) *SteamShortcut {
 		LastPlayTime:        0,
 		FlatpakAppID:        "",
 		Tags:                []string{},
+		UnknownStrings:      make(map[string]string),
+		UnknownInts:         make(map[string]uint32),
 	}
 }
 
@@ -387,18 +438,40 @@ func (m *Manager) addShortcutToFile(shortcutsPath string, shortcut *SteamShortcu
 		existingNormalizedName := m.normalizeName(existing.AppName)
 		if existingNormalizedName == normalizedName {
 			existingIndex = i
-			// Update the existing shortcut's AppID to use the new format
-			existing.AppID = shortcut.AppID
 			break
 		}
 	}
 
 	if existingIndex >= 0 {
-		// Update existing shortcut with new settings but preserve some fields
+		// Update existing shortcut by preserving important existing data
+		// and only updating the fields that should change
 		existingShortcut := shortcuts[existingIndex]
-		shortcut.LastPlayTime = existingShortcut.LastPlayTime // Preserve play time
-		shortcuts[existingIndex] = shortcut
-		log.Printf("Updated existing Steam shortcut: %s (AppID: %d)", shortcut.AppName, shortcut.AppID)
+
+		// Create a new shortcut with updated data but preserve existing values
+		updatedShortcut := &SteamShortcut{
+			AppID:               shortcut.AppID,                       // Use new AppID format
+			AppName:             shortcut.AppName,                     // Update name (should be same anyway)
+			Exe:                 shortcut.Exe,                         // Update executable path
+			StartDir:            shortcut.StartDir,                    // Update start directory
+			Icon:                shortcut.Icon,                        // Update icon
+			ShortcutPath:        existingShortcut.ShortcutPath,        // Preserve existing
+			LaunchOptions:       existingShortcut.LaunchOptions,       // Preserve existing
+			IsHidden:            existingShortcut.IsHidden,            // Preserve existing
+			AllowDesktopConfig:  existingShortcut.AllowDesktopConfig,  // Preserve existing
+			AllowOverlay:        existingShortcut.AllowOverlay,        // Preserve existing
+			OpenVR:              existingShortcut.OpenVR,              // Preserve existing
+			Devkit:              existingShortcut.Devkit,              // Preserve existing
+			DevkitGameID:        existingShortcut.DevkitGameID,        // Preserve existing
+			DevkitOverrideAppID: existingShortcut.DevkitOverrideAppID, // Preserve existing
+			LastPlayTime:        existingShortcut.LastPlayTime,        // Preserve play time
+			FlatpakAppID:        existingShortcut.FlatpakAppID,        // Preserve existing
+			Tags:                existingShortcut.Tags,                // Preserve tags
+			UnknownStrings:      existingShortcut.UnknownStrings,      // Preserve unknown string fields
+			UnknownInts:         existingShortcut.UnknownInts,         // Preserve unknown int fields
+		}
+
+		shortcuts[existingIndex] = updatedShortcut
+		log.Printf("Updated existing Steam shortcut: %s (AppID: %d)", updatedShortcut.AppName, updatedShortcut.AppID)
 	} else {
 		// Add new shortcut
 		shortcuts = append(shortcuts, shortcut)
@@ -409,8 +482,8 @@ func (m *Manager) addShortcutToFile(shortcutsPath string, shortcut *SteamShortcu
 	return m.writeShortcutsFile(shortcutsPath, shortcuts)
 }
 
-// readShortcutsFile reads shortcuts from the shortcuts.vdf file
-func (m *Manager) readShortcutsFile(filePath string) ([]*SteamShortcut, error) {
+// ReadShortcutsFile reads shortcuts from the shortcuts.vdf file (public for testing)
+func (m *Manager) ReadShortcutsFile(filePath string) ([]*SteamShortcut, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
@@ -425,8 +498,8 @@ func (m *Manager) readShortcutsFile(filePath string) ([]*SteamShortcut, error) {
 	return m.parseShortcutsVDF(data)
 }
 
-// writeShortcutsFile writes shortcuts to the shortcuts.vdf file
-func (m *Manager) writeShortcutsFile(filePath string, shortcuts []*SteamShortcut) error {
+// WriteShortcutsFile writes shortcuts to the shortcuts.vdf file (public for testing)
+func (m *Manager) WriteShortcutsFile(filePath string, shortcuts []*SteamShortcut) error {
 	// Ensure directory exists
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -436,6 +509,16 @@ func (m *Manager) writeShortcutsFile(filePath string, shortcuts []*SteamShortcut
 	data := m.buildShortcutsVDF(shortcuts)
 
 	return os.WriteFile(filePath, data, 0644)
+}
+
+// readShortcutsFile reads shortcuts from the shortcuts.vdf file (internal)
+func (m *Manager) readShortcutsFile(filePath string) ([]*SteamShortcut, error) {
+	return m.ReadShortcutsFile(filePath)
+}
+
+// writeShortcutsFile writes shortcuts to the shortcuts.vdf file (internal)
+func (m *Manager) writeShortcutsFile(filePath string, shortcuts []*SteamShortcut) error {
+	return m.WriteShortcutsFile(filePath, shortcuts)
 }
 
 // parseShortcutsVDF parses the binary VDF format
@@ -660,6 +743,12 @@ func (m *Manager) assignStringField(shortcut *SteamShortcut, fieldName, value st
 		shortcut.DevkitGameID = value
 	case "FlatpakAppID":
 		shortcut.FlatpakAppID = value
+	default:
+		// Preserve unknown string fields to prevent corruption
+		if shortcut.UnknownStrings == nil {
+			shortcut.UnknownStrings = make(map[string]string)
+		}
+		shortcut.UnknownStrings[fieldName] = value
 	}
 }
 
@@ -682,6 +771,12 @@ func (m *Manager) assignIntField(shortcut *SteamShortcut, fieldName string, valu
 		shortcut.DevkitOverrideAppID = value
 	case "LastPlayTime":
 		shortcut.LastPlayTime = value
+	default:
+		// Preserve unknown integer fields to prevent corruption
+		if shortcut.UnknownInts == nil {
+			shortcut.UnknownInts = make(map[string]uint32)
+		}
+		shortcut.UnknownInts[fieldName] = value
 	}
 }
 
@@ -723,7 +818,7 @@ func (m *Manager) writeShortcutData(buffer *bytes.Buffer, shortcut *SteamShortcu
 	buffer.WriteByte(0x00)
 	binary.Write(buffer, binary.LittleEndian, shortcut.AppID)
 
-	// Write string fields
+	// Write string fields - ALWAYS write all fields to preserve existing data
 	m.writeStringField(buffer, "appname", shortcut.AppName)
 	m.writeStringField(buffer, "exe", shortcut.Exe)
 	m.writeStringField(buffer, "StartDir", shortcut.StartDir)
@@ -744,12 +839,24 @@ func (m *Manager) writeShortcutData(buffer *bytes.Buffer, shortcut *SteamShortcu
 	m.writeIntField(buffer, "LastPlayTime", shortcut.LastPlayTime)
 	m.writeStringField(buffer, "FlatpakAppID", shortcut.FlatpakAppID)
 
+	// Write unknown string fields to preserve all data
+	for fieldName, value := range shortcut.UnknownStrings {
+		m.writeStringField(buffer, fieldName, value)
+	}
+
+	// Write unknown integer fields to preserve all data
+	for fieldName, value := range shortcut.UnknownInts {
+		m.writeIntField(buffer, fieldName, value)
+	}
+
 	// Write tags
 	m.writeTags(buffer, shortcut.Tags)
 }
 
 // writeStringField writes a string field to the buffer
 func (m *Manager) writeStringField(buffer *bytes.Buffer, name, value string) {
+	// ALWAYS write all fields to preserve existing shortcut data
+	// Skipping fields based on content was causing corruption of existing shortcuts
 	buffer.WriteByte(0x01) // String type
 	buffer.WriteString(name)
 	buffer.WriteByte(0x00)
