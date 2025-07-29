@@ -18,6 +18,7 @@ type Game struct {
 	Version     string    `json:"version"`
 	Description string    `json:"description"`
 	IconPath    string    `json:"icon_path"`
+	ImagePath   string    `json:"image_path"` // Path to downloaded game image
 	IsInstalled bool      `json:"is_installed"`
 
 	// Version checking configuration

@@ -8,12 +8,14 @@ import (
 	"gamelauncher/search"
 	"gamelauncher/storage"
 	"image/color"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
@@ -91,8 +93,13 @@ func (mw *MainWindow) setupUI() {
 	mw.gameList = widget.NewList(
 		func() int { return len(mw.games) },
 		func() fyne.CanvasObject {
-			// Use Border container to put name on left, everything else on right
+			// Create image and name container on the left
+			gameImage := canvas.NewImageFromResource(theme.ComputerIcon())
+			gameImage.SetMinSize(fyne.NewSize(60, 40))
+			gameImage.FillMode = canvas.ImageFillContain
+
 			nameLabel := widget.NewLabel("Game Name")
+			nameContainer := container.NewHBox(gameImage, nameLabel)
 
 			// Create right-side container with all other elements
 			rightContainer := container.NewHBox()
@@ -124,8 +131,8 @@ func (mw *MainWindow) setupUI() {
 			rightContainer.Add(launchContainer)
 			rightContainer.Add(editContainer)
 
-			// Use Border to put name on left, everything else on right side
-			return container.NewBorder(nil, nil, nil, rightContainer, nameLabel)
+			// Use Border to put image+name on left, everything else on right side
+			return container.NewBorder(nil, nil, nil, rightContainer, nameContainer)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			game := mw.games[id]
@@ -133,9 +140,38 @@ func (mw *MainWindow) setupUI() {
 
 			// Border structure: [center, right] - only 2 objects
 			if len(borderContainer.Objects) >= 2 {
-				// Update name label (center - index 0)
-				if nameLabel, ok := borderContainer.Objects[0].(*widget.Label); ok {
-					nameLabel.SetText(game.Name)
+				// Update image and name (center - index 0)
+				if nameContainer, ok := borderContainer.Objects[0].(*fyne.Container); ok {
+					if len(nameContainer.Objects) >= 2 {
+						// Update image (first element)
+						if gameImage, ok := nameContainer.Objects[0].(*canvas.Image); ok {
+							// Try to load game image if available
+							if game.ImagePath != "" {
+								// Check if image file exists
+								if _, err := os.Stat(game.ImagePath); err == nil {
+									// Load image from file
+									fmt.Printf("DEBUG: Loading image for %s: %s\n", game.Name, game.ImagePath)
+									gameImage.File = game.ImagePath
+									gameImage.Resource = nil // Clear resource to use file
+								} else {
+									// Image file is missing, just show default icon
+									fmt.Printf("DEBUG: Image file missing for %s, using default icon\n", game.Name)
+									gameImage.File = "" // Clear file
+									gameImage.Resource = theme.ComputerIcon()
+								}
+							} else {
+								fmt.Printf("DEBUG: No image path for %s, using default icon\n", game.Name)
+								gameImage.File = "" // Clear file
+								gameImage.Resource = theme.ComputerIcon()
+							}
+							gameImage.Refresh()
+						}
+
+						// Update name label (second element)
+						if nameLabel, ok := nameContainer.Objects[1].(*widget.Label); ok {
+							nameLabel.SetText(game.Name)
+						}
+					}
 				}
 
 				// Update right-side container elements (right - index 1)
@@ -230,6 +266,9 @@ func (mw *MainWindow) createToolbar() *widget.Toolbar {
 		}),
 		widget.NewToolbarAction(theme.ViewRefreshIcon(), func() {
 			mw.checkAllUpdates()
+		}),
+		widget.NewToolbarAction(theme.DownloadIcon(), func() {
+			mw.fetchImagesForAllGames()
 		}),
 		widget.NewToolbarAction(theme.SettingsIcon(), func() {
 			mw.showSettings()
@@ -385,6 +424,16 @@ func (mw *MainWindow) autoSearchForGame(gameName string, urlEntry *widget.Entry)
 
 		// If we have a good match (above 70%), auto-fill it
 		if bestMatch.MatchScore > 0.7 {
+			// Download image for the best match
+			if bestMatch.ImageURL != "" {
+				err := mw.searchService.DownloadImageForResult(&bestMatch)
+				if err != nil {
+					fmt.Printf("Warning: Failed to download image: %v\n", err)
+				} else {
+					fmt.Printf("Downloaded image to: %s\n", bestMatch.ImagePath)
+				}
+			}
+
 			// Update UI on main thread using the app's main thread
 			mw.app.SendNotification(&fyne.Notification{
 				Title: fmt.Sprintf("Link Found for %s", gameName),
@@ -405,24 +454,62 @@ func (mw *MainWindow) autoSearchForGame(gameName string, urlEntry *widget.Entry)
 
 // showSearchResultsForNewGame shows search results for a new game being added
 func (mw *MainWindow) showSearchResultsForNewGame(gameName string, results []search.SearchResult, urlEntry *widget.Entry) {
-	// Create a list of result strings for display
-	var resultStrings []string
 	var selectedIndex int
-	for _, result := range results {
-		score := fmt.Sprintf("%.1f%%", result.MatchScore*100)
-		resultString := fmt.Sprintf("[%s] %s", score, result.Title)
-		resultStrings = append(resultStrings, resultString)
-	}
 
-	// Create a list widget for results
+	// Create a list widget for results with images
 	resultList := widget.NewList(
-		func() int { return len(resultStrings) },
+		func() int { return len(results) },
 		func() fyne.CanvasObject {
-			return widget.NewLabel("Result")
+			// Create a container with image and text
+			image := canvas.NewImageFromResource(theme.ComputerIcon())
+			image.SetMinSize(fyne.NewSize(80, 60))
+			image.FillMode = canvas.ImageFillContain
+
+			scoreLabel := widget.NewLabel("Score")
+			titleLabel := widget.NewLabel("Title")
+			titleLabel.TextStyle = fyne.TextStyle{Bold: true}
+
+			// Create a vertical container for text
+			textContainer := container.NewVBox(scoreLabel, titleLabel)
+
+			// Create a horizontal container with image and text
+			return container.NewHBox(image, textContainer)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
-			label := obj.(*widget.Label)
-			label.SetText(resultStrings[id])
+			result := results[id]
+			container := obj.(*fyne.Container)
+
+			// Update image if available
+			if len(container.Objects) > 0 {
+				if image, ok := container.Objects[0].(*canvas.Image); ok {
+					if result.ImagePath != "" {
+						// Load image from file
+						image.File = result.ImagePath
+						image.Refresh()
+					} else {
+						// Use default icon
+						image.Resource = theme.ComputerIcon()
+						image.Refresh()
+					}
+				}
+			}
+
+			// Update text
+			if len(container.Objects) > 1 {
+				if textContainer, ok := container.Objects[1].(*fyne.Container); ok {
+					if len(textContainer.Objects) > 0 {
+						if scoreLabel, ok := textContainer.Objects[0].(*widget.Label); ok {
+							score := fmt.Sprintf("%.1f%%", result.MatchScore*100)
+							scoreLabel.SetText(score)
+						}
+					}
+					if len(textContainer.Objects) > 1 {
+						if titleLabel, ok := textContainer.Objects[1].(*widget.Label); ok {
+							titleLabel.SetText(result.Title)
+						}
+					}
+				}
+			}
 		},
 	)
 
@@ -452,16 +539,32 @@ func (mw *MainWindow) showSearchResultsForNewGame(gameName string, results []sea
 
 			selectedResult := results[selectedIndex]
 
+			// Download image for the selected result
+			if selectedResult.ImageURL != "" {
+				err := mw.searchService.DownloadImageForResult(&selectedResult)
+				if err != nil {
+					fmt.Printf("Warning: Failed to download image: %v\n", err)
+				} else {
+					fmt.Printf("Downloaded image to: %s\n", selectedResult.ImagePath)
+				}
+			}
+
 			// Update the URL entry on main thread
 			urlEntry.SetText(selectedResult.Link)
 			urlEntry.Refresh()
+
+			// Store the image path for the new game
+			if selectedResult.ImagePath != "" {
+				// We'll need to update the game's ImagePath when it's created
+				// This will be handled in the form submission
+			}
 
 			dialog.ShowInformation("Link Selected",
 				fmt.Sprintf("Source URL updated to:\n%s", selectedResult.Link), mw.window)
 		}, mw.window)
 
 	// Set initial selection
-	if len(resultStrings) > 0 {
+	if len(results) > 0 {
 		resultList.Select(0)
 	}
 }
@@ -926,4 +1029,135 @@ func (mw *MainWindow) searchForGame() {
 		dialog.ShowInformation("Link Updated",
 			fmt.Sprintf("Source URL updated for '%s' to:\n%s", selectedGame.Name, bestMatch.Link), mw.window)
 	}()
+}
+
+// fetchImagesForAllGames downloads images for all games that have source URLs but no images
+func (mw *MainWindow) fetchImagesForAllGames() {
+	// Show progress dialog
+	progress := dialog.NewProgress("Fetching Images", "Downloading images for all games...", mw.window)
+	progress.Show()
+
+	go func() {
+		defer progress.Hide()
+
+		totalGames := len(mw.games)
+		downloadedCount := 0
+		failedCount := 0
+
+		fmt.Printf("DEBUG: Starting image fetch for %d games\n", totalGames)
+
+		for i, game := range mw.games {
+			// Update progress
+			progress.SetValue(float64(i) / float64(totalGames))
+
+			fmt.Printf("DEBUG: Processing game %d/%d: %s (ImagePath: %s, SourceURL: %s)\n",
+				i+1, totalGames, game.Name, game.ImagePath, game.SourceURL)
+
+			// Skip games that already have valid images or no source URL
+			if game.SourceURL == "" {
+				fmt.Printf("DEBUG: Skipping %s - no source URL\n", game.Name)
+				continue
+			}
+
+			// Check if image exists and is valid
+			hasValidImage := false
+			if game.ImagePath != "" {
+				if _, err := os.Stat(game.ImagePath); err == nil {
+					hasValidImage = true
+					fmt.Printf("DEBUG: Skipping %s - valid image exists: %s\n", game.Name, game.ImagePath)
+				} else {
+					fmt.Printf("DEBUG: %s has ImagePath but file is missing: %s\n", game.Name, game.ImagePath)
+				}
+			}
+
+			if hasValidImage {
+				continue
+			}
+
+			// Search for the game to get image URL
+			fmt.Printf("DEBUG: Searching for %s...\n", game.Name)
+			results, err := mw.searchService.SearchGame(game.Name)
+			if err != nil {
+				fmt.Printf("DEBUG: Search failed for %s: %v\n", game.Name, err)
+				failedCount++
+				continue
+			}
+
+			fmt.Printf("DEBUG: Found %d search results for %s\n", len(results), game.Name)
+
+			if len(results) > 0 {
+				// Find the best match
+				bestMatch := results[0]
+				for _, result := range results {
+					if result.MatchScore > bestMatch.MatchScore {
+						bestMatch = result
+					}
+				}
+
+				fmt.Printf("DEBUG: Best match for %s: %s (score: %.2f, imageURL: %s)\n",
+					game.Name, bestMatch.Title, bestMatch.MatchScore, bestMatch.ImageURL)
+
+				// Download image if we have a good match and image URL
+				if bestMatch.MatchScore > 0.7 && bestMatch.ImageURL != "" {
+					fmt.Printf("DEBUG: Attempting to download image for %s from %s\n", game.Name, bestMatch.ImageURL)
+					err := mw.searchService.DownloadImageForResult(&bestMatch)
+					if err == nil && bestMatch.ImagePath != "" {
+						game.ImagePath = bestMatch.ImagePath
+						downloadedCount++
+						fmt.Printf("DEBUG: Successfully downloaded image for %s: %s\n", game.Name, game.ImagePath)
+					} else {
+						failedCount++
+						fmt.Printf("DEBUG: Failed to download image for %s: %v\n", game.Name, err)
+					}
+				} else {
+					fmt.Printf("DEBUG: Skipping download for %s - score: %.2f, imageURL: %s\n",
+						game.Name, bestMatch.MatchScore, bestMatch.ImageURL)
+				}
+			} else {
+				fmt.Printf("DEBUG: No search results found for %s\n", game.Name)
+			}
+		}
+
+		// Save games with updated image paths
+		mw.saveGames()
+		mw.gameList.Refresh()
+
+		// Show completion dialog
+		dialog.ShowInformation("Image Fetch Complete",
+			fmt.Sprintf("Downloaded %d images, %d failed.\nGames with images will now display them in the list.", downloadedCount, failedCount), mw.window)
+	}()
+}
+
+// redownloadImageForGame attempts to re-download the image for a game
+func (mw *MainWindow) redownloadImageForGame(game *models.Game) {
+	// Search for the game to get image URL
+	results, err := mw.searchService.SearchGame(game.Name)
+	if err != nil {
+		fmt.Printf("DEBUG: Failed to search for %s: %v\n", game.Name, err)
+		return
+	}
+
+	if len(results) > 0 {
+		// Find the best match
+		bestMatch := results[0]
+		for _, result := range results {
+			if result.MatchScore > bestMatch.MatchScore {
+				bestMatch = result
+			}
+		}
+
+		// Download image if we have a good match and image URL
+		if bestMatch.MatchScore > 0.7 && bestMatch.ImageURL != "" {
+			err := mw.searchService.DownloadImageForResult(&bestMatch)
+			if err == nil && bestMatch.ImagePath != "" {
+				// Update the game's image path
+				game.ImagePath = bestMatch.ImagePath
+				mw.saveGames()
+				mw.gameList.Refresh()
+				fmt.Printf("DEBUG: Successfully re-downloaded image for %s: %s\n", game.Name, game.ImagePath)
+			} else {
+				fmt.Printf("DEBUG: Failed to re-download image for %s: %v\n", game.Name, err)
+			}
+		}
+	}
 }

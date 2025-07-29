@@ -154,9 +154,43 @@ func (app *ConsoleApp) addGame() {
 	// Clean the executable path
 	executable = strings.Trim(executable, `"'`)
 
-	fmt.Print("Enter source URL (optional): ")
+	fmt.Print("Enter source URL (optional, or press Enter to search): ")
 	sourceURL, _ := reader.ReadString('\n')
 	sourceURL = strings.TrimSpace(sourceURL)
+
+	// If no source URL provided, search for it
+	if sourceURL == "" {
+		fmt.Printf("Searching for '%s' on F95Zone...\n", name)
+
+		searchService := search.NewService()
+		results, err := searchService.SearchGame(name)
+		if err != nil {
+			fmt.Printf("Search failed: %v\n", err)
+		} else if len(results) > 0 {
+			// Find the best match
+			bestMatch := results[0]
+			for _, result := range results {
+				if result.MatchScore > bestMatch.MatchScore {
+					bestMatch = result
+				}
+			}
+
+			fmt.Printf("Best match: %s (%.1f%%)\n", bestMatch.Title, bestMatch.MatchScore*100)
+			fmt.Printf("Link: %s\n", bestMatch.Link)
+
+			// Download image for the best match
+			if bestMatch.ImageURL != "" {
+				err := searchService.DownloadImageForResult(&bestMatch)
+				if err != nil {
+					fmt.Printf("Warning: Failed to download image: %v\n", err)
+				} else {
+					fmt.Printf("Downloaded image to: %s\n", bestMatch.ImagePath)
+				}
+			}
+
+			sourceURL = bestMatch.Link
+		}
+	}
 
 	if name == "" || executable == "" {
 		fmt.Println("Name and executable are required.")
