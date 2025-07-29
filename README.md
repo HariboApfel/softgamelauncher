@@ -16,44 +16,53 @@ A cross-platform game launcher built in Go that allows you to import games from 
 
 ## Quick Start
 
-### Windows (GUI Version)
-```bash
-# Download and run the build script
-.\build.ps1
-# or
-build.bat
+### Download Releases
 
-# Run the application
-.\gamelauncher.exe
-```
+The easiest way to get started is to download pre-built releases from the [GitHub Releases page](../../releases).
 
-### Windows (Console Version - No OpenGL dependencies)
-```bash
-build_console.bat
-.\gamelauncher_console.exe
-```
+**Available Downloads:**
+- **Windows**: `gamelauncher-windows-amd64.zip`
+- **Linux**: `gamelauncher-linux-amd64.tar.gz`
 
-### macOS/Linux
+### Building from Source
+
+For developers or to get the latest features, you can build from source:
+
 ```bash
-./build.sh
-./gamelauncher
+git clone <repository-url>
+cd gamelauncher
+
+# Build GUI version
+go build -o gamelauncher main.go
+
+# Build console version  
+go build -o gamelauncher_console main_console.go
 ```
 
 ## Requirements
 
-- **Go 1.21+**: Download from [golang.org](https://golang.org/dl/)
-- **Windows GUI**: C compiler (TDM-GCC, MinGW-w64, or Visual Studio Build Tools)
+- **Go 1.21+**: Download from [golang.org](https://golang.org/dl/) (for building from source)
+- **Windows GUI**: C compiler (TDM-GCC, MinGW-w64, or Visual Studio Build Tools) for CGO dependencies
 - **Git**: For cloning the repository
 
 ## Installation
 
-### 1. Clone Repository
+### Option 1: Use Pre-built Releases (Recommended)
+
+1. Go to the [GitHub Releases page](../../releases)
+2. Download the appropriate package for your platform
+3. Extract the archive
+4. Run the executable
+
+### Option 2: Build from Source
+
+#### 1. Clone Repository
 ```bash
 git clone <repository-url>
 cd gamelauncher
 ```
 
-### 2. Install Dependencies (Windows GUI only)
+#### 2. Install Dependencies (Windows GUI only)
 
 **Option A: TDM-GCC (Easiest)**
 1. Download from [jmeubank.github.io/tdm-gcc](https://jmeubank.github.io/tdm-gcc/)
@@ -69,21 +78,24 @@ cd gamelauncher
 1. Download from Microsoft
 2. Install with "C++ build tools" workload
 
-### 3. Build Application
+#### 3. Build Application
 
 **Windows:**
 ```bash
-# Automatic build (tries multiple configurations)
-.\build.ps1
+# GUI version
+go build -ldflags "-H windowsgui" -o gamelauncher.exe main.go
 
-# Or specific versions
-build.bat              # GUI version
-build_console.bat      # Console version
+# Console version
+go build -o gamelauncher_console.exe main_console.go
 ```
 
 **macOS/Linux:**
 ```bash
-./build.sh
+# GUI version
+go build -o gamelauncher main.go
+
+# Console version
+go build -o gamelauncher_console main_console.go
 ```
 
 ### 4. Run Application
@@ -93,7 +105,8 @@ build_console.bat      # Console version
 ./gamelauncher         # macOS/Linux
 
 # Console version
-.\gamelauncher_console.exe
+.\gamelauncher_console.exe  # Windows
+./gamelauncher_console      # macOS/Linux
 
 # Command line usage
 .\gamelauncher.exe -list          # List games
@@ -274,9 +287,8 @@ gamelauncher/
 ├── ui/                 # User interface
 │   ├── main_window.go  # Main application window
 │   └── colored_label.go # UI components
-├── build.ps1           # Windows build script
-├── build.sh            # Unix/Linux build script
-├── build_console.bat   # Console version build
+├── .github/workflows/  # Build automation
+│   └── build.yml       # Build and release automation
 └── README.md           # This file
 ```
 
@@ -299,7 +311,8 @@ gamelauncher/
 
 **Quick fix**: Use console version
 ```bash
-build_console.bat  # No OpenGL dependencies
+# Build console version (no OpenGL dependencies)
+go build -o gamelauncher_console main_console.go
 ```
 
 ### Common Issues
@@ -307,42 +320,36 @@ build_console.bat  # No OpenGL dependencies
 1. **Games not launching**: Check executable path is correct
 2. **Update checks failing**: Verify internet connection and URLs
 3. **Permission errors**: Ensure read/write access to data directory
-4. **Path issues with quotes**: Run `fix_paths.bat`
 
 ### Path Issues
 
 If you see errors like: `exec: "\"C:\\path\\game.exe\"": file does not exist`
 
 **Solutions:**
-1. Run path fixer: `fix_paths.bat`
-2. Edit game and remove quotes from executable path
-3. Rebuild application for latest path handling
+1. Edit game and remove quotes from executable path
+2. Ensure executable path is correct and accessible
 
 ### Debug Mode
 ```bash
 go run main.go -debug
 ```
 
-## Testing Build Scripts
+## Testing
 
-Test the build system:
+Run the built-in tests:
 ```bash
-# Test path cleaning
-test_paths.bat
-
-# Fix path issues
-fix_paths.bat
-
-# Verify build
-build.ps1
+# Run Go tests
+go test ./...
 ```
 
 ## Building for Distribution
 
+GitHub Actions automatically handles building on every commit. For manual builds:
+
 ### Windows
 ```bash
 # GUI (no console window)
-go build -ldflags="-H windowsgui" -o gamelauncher.exe
+go build -ldflags="-H windowsgui" -o gamelauncher.exe main.go
 
 # Console version
 go build -o gamelauncher_console.exe main_console.go
@@ -350,12 +357,12 @@ go build -o gamelauncher_console.exe main_console.go
 
 ### macOS
 ```bash
-go build -o gamelauncher
+go build -o gamelauncher main.go
 ```
 
 ### Linux
 ```bash
-go build -o gamelauncher
+go build -o gamelauncher main.go
 ```
 
 ## Dependencies
@@ -409,10 +416,13 @@ This project is open source and available under the MIT License.
 
 ### First Time Setup
 ```bash
+# Download from releases (recommended)
+# Extract and run
+
+# Or build from source
 git clone <repo>
 cd gamelauncher
-.\build.ps1        # Windows
-./build.sh         # macOS/Linux
+go build -o gamelauncher main.go
 ```
 
 ### Daily Usage
@@ -424,7 +434,6 @@ cd gamelauncher
 
 ### Troubleshooting
 ```bash
-build_console.bat           # No OpenGL issues
-fix_paths.bat              # Fix path problems
-test_paths.bat             # Test path handling
+# Build console version (no OpenGL issues)
+go build -o gamelauncher_console main_console.go
 ``` 

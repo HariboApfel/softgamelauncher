@@ -1,9 +1,13 @@
+//go:build !console
+// +build !console
+
 package main
 
 import (
 	"fmt"
 	"gamelauncher/game"
 	"gamelauncher/search"
+	"gamelauncher/steam"
 	"gamelauncher/storage"
 	"gamelauncher/ui"
 	"log"
@@ -50,6 +54,13 @@ func handleCommandLineArgs() {
 			return
 		}
 		searchForGame(args[1])
+	case "-steam", "--steam":
+		if len(args) < 2 {
+			fmt.Println("Error: Game number required")
+			showUsage()
+			return
+		}
+		addGameToSteamByNumber(args[1])
 	case "-help", "--help", "-h", "--h":
 		showUsage()
 	default:
@@ -171,6 +182,63 @@ func searchForGame(gameName string) {
 	}
 }
 
+// addGameToSteamByNumber adds a game to Steam by its number in the list
+func addGameToSteamByNumber(gameNumber string) {
+	// Load games from storage
+	storage := storage.NewManager()
+	games, err := storage.LoadGames()
+	if err != nil {
+		fmt.Printf("Error loading games: %v\n", err)
+		return
+	}
+
+	if len(games) == 0 {
+		fmt.Println("No games found.")
+		return
+	}
+
+	// Parse game number
+	num, err := strconv.Atoi(gameNumber)
+	if err != nil {
+		fmt.Printf("Invalid game number: %s\n", gameNumber)
+		return
+	}
+
+	// Convert to 0-based index
+	index := num - 1
+	if index < 0 || index >= len(games) {
+		fmt.Printf("Game number %d not found. Available games:\n", num)
+		listGames()
+		return
+	}
+
+	// Get the game
+	gameItem := games[index]
+	fmt.Printf("Adding '%s' to Steam...\n", gameItem.Name)
+
+	// Create Steam manager and add game
+	steamManager := steam.NewManager()
+
+	// Show game information
+	appID := steamManager.GetSteamAppID(gameItem)
+	steamURL := steamManager.GetShortcutURL(appID)
+
+	fmt.Printf("Game: %s\n", gameItem.Name)
+	fmt.Printf("Executable: %s\n", gameItem.Executable)
+	fmt.Printf("Steam App ID: %d\n", appID)
+	fmt.Printf("Steam URL: %s\n", steamURL)
+
+	err = steamManager.AddGameToSteam(gameItem)
+	if err != nil {
+		fmt.Printf("Error adding game to Steam: %v\n", err)
+	} else {
+		fmt.Printf("Successfully added '%s' to Steam!\n", gameItem.Name)
+		fmt.Printf("App ID: %d\n", appID)
+		fmt.Printf("Steam URL: %s\n", steamURL)
+		fmt.Println("\nPlease restart Steam to see the new shortcut in your library.")
+	}
+}
+
 // showUsage displays command-line usage information
 func showUsage() {
 	fmt.Println("Game Launcher - Command Line Usage")
@@ -183,11 +251,13 @@ func showUsage() {
 	fmt.Println("  -game <number>     Launch game by number")
 	fmt.Println("  -list              List all available games")
 	fmt.Println("  -search <name>     Search for game on F95Zone")
+	fmt.Println("  -steam <number>    Add game to Steam by number")
 	fmt.Println("  -help              Show this help message")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  gamelauncher.exe -game 1        # Launch the first game")
 	fmt.Println("  gamelauncher.exe -list          # List all games")
 	fmt.Println("  gamelauncher.exe -search \"My Pig Princess\"  # Search for a game")
+	fmt.Println("  gamelauncher.exe -steam 1       # Add first game to Steam")
 	fmt.Println("  gamelauncher.exe -help          # Show help")
 }

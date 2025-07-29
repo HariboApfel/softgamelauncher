@@ -6,6 +6,7 @@ import (
 	"gamelauncher/models"
 	"gamelauncher/monitor"
 	"gamelauncher/search"
+	"gamelauncher/steam"
 	"gamelauncher/storage"
 	"image/color"
 	"os"
@@ -30,6 +31,7 @@ type MainWindow struct {
 	storage       *storage.Manager
 	monitor       *monitor.SourceMonitor
 	searchService *search.Service
+	steamManager  *steam.Manager
 	games         []*models.Game
 	settings      *models.Settings
 	gameList      *widget.List
@@ -52,6 +54,7 @@ func NewMainWindow() *MainWindow {
 		storage:       storage.NewManager(),
 		monitor:       monitor.NewSourceMonitor(),
 		searchService: search.NewService(),
+		steamManager:  steam.NewManager(),
 		selectedGame:  -1, // Initialize to no selection
 	}
 
@@ -270,6 +273,10 @@ func (mw *MainWindow) createToolbar() *widget.Toolbar {
 		widget.NewToolbarAction(theme.DownloadIcon(), func() {
 			mw.fetchImagesForAllGames()
 		}),
+		widget.NewToolbarAction(theme.ComputerIcon(), func() {
+			mw.addSelectedGameToSteam()
+		}),
+		widget.NewToolbarSeparator(),
 		widget.NewToolbarAction(theme.SettingsIcon(), func() {
 			mw.showSettings()
 		}),
@@ -1160,4 +1167,50 @@ func (mw *MainWindow) redownloadImageForGame(game *models.Game) {
 			}
 		}
 	}
+}
+
+// addSelectedGameToSteam adds the currently selected game to Steam as a non-Steam shortcut
+func (mw *MainWindow) addSelectedGameToSteam() {
+	if mw.selectedGame < 0 || mw.selectedGame >= len(mw.games) {
+		dialog.ShowInformation("No Game Selected",
+			"Please select a game to add to Steam.", mw.window)
+		return
+	}
+
+	selectedGame := mw.games[mw.selectedGame]
+
+	// Show confirmation dialog with Steam information
+	appID := mw.steamManager.GetSteamAppID(selectedGame)
+	steamURL := mw.steamManager.GetShortcutURL(appID)
+
+	message := fmt.Sprintf("Add '%s' to Steam as a non-Steam shortcut?\n\nSteam App ID: %d\nSteam URL: %s\n\nNote: Steam must be restarted to see the new shortcut.",
+		selectedGame.Name, appID, steamURL)
+
+	dialog.ShowConfirm("Add to Steam", message,
+		func(confirm bool) {
+			if !confirm {
+				return
+			}
+
+			// Show progress dialog
+			progress := dialog.NewProgress("Adding to Steam", "Adding game to Steam...", mw.window)
+			progress.Show()
+
+			go func() {
+				defer progress.Hide()
+
+				// Add game to Steam
+				err := mw.steamManager.AddGameToSteam(selectedGame)
+				if err != nil {
+					dialog.ShowError(fmt.Errorf("failed to add game to Steam: %w", err), mw.window)
+					return
+				}
+
+				// Show success dialog
+				successMessage := fmt.Sprintf("Successfully added '%s' to Steam!\n\nApp ID: %d\nSteam URL: %s\n\nPlease restart Steam to see the new shortcut in your library.",
+					selectedGame.Name, appID, steamURL)
+
+				dialog.ShowInformation("Added to Steam", successMessage, mw.window)
+			}()
+		}, mw.window)
 }

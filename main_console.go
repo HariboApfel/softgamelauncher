@@ -1,3 +1,6 @@
+//go:build console
+// +build console
+
 package main
 
 import (
@@ -7,6 +10,7 @@ import (
 	"gamelauncher/models"
 	"gamelauncher/monitor"
 	"gamelauncher/search"
+	"gamelauncher/steam"
 	"gamelauncher/storage"
 	"os"
 	"strconv"
@@ -15,19 +19,21 @@ import (
 
 // ConsoleApp represents the console-based game launcher
 type ConsoleApp struct {
-	gameManager *game.Manager
-	storage     *storage.Manager
-	monitor     *monitor.SourceMonitor
-	games       []*models.Game
-	settings    *models.Settings
+	gameManager  *game.Manager
+	storage      *storage.Manager
+	monitor      *monitor.SourceMonitor
+	steamManager *steam.Manager
+	games        []*models.Game
+	settings     *models.Settings
 }
 
 // NewConsoleApp creates a new console application
 func NewConsoleApp() *ConsoleApp {
 	return &ConsoleApp{
-		gameManager: game.NewManager(),
-		storage:     storage.NewManager(),
-		monitor:     monitor.NewSourceMonitor(),
+		gameManager:  game.NewManager(),
+		storage:      storage.NewManager(),
+		monitor:      monitor.NewSourceMonitor(),
+		steamManager: steam.NewManager(),
 	}
 }
 
@@ -69,8 +75,9 @@ func (app *ConsoleApp) showMenu() {
 	fmt.Println("5. Edit Game")
 	fmt.Println("6. Delete Game")
 	fmt.Println("7. Check for Updates")
-	fmt.Println("8. Settings")
-	fmt.Println("9. Exit")
+	fmt.Println("8. Add Game to Steam")
+	fmt.Println("9. Settings")
+	fmt.Println("10. Exit")
 	fmt.Print("Choose an option: ")
 }
 
@@ -106,8 +113,10 @@ func (app *ConsoleApp) handleChoice(choice int) {
 	case 7:
 		app.checkUpdates()
 	case 8:
-		app.showSettings()
+		app.addGameToSteam()
 	case 9:
+		app.showSettings()
+	case 10:
 		fmt.Println("Goodbye!")
 		os.Exit(0)
 	default:
@@ -471,6 +480,57 @@ func (app *ConsoleApp) saveSettings() {
 	if err != nil {
 		fmt.Printf("Error saving settings: %v\n", err)
 	}
+}
+
+// addGameToSteam adds a selected game to Steam as a non-Steam shortcut
+func (app *ConsoleApp) addGameToSteam() {
+	if len(app.games) == 0 {
+		fmt.Println("No games available.")
+		return
+	}
+
+	app.listGames()
+	fmt.Print("Enter game number to add to Steam: ")
+	choice := app.getUserChoice()
+
+	if choice < 1 || choice > len(app.games) {
+		fmt.Println("Invalid game number.")
+		return
+	}
+
+	game := app.games[choice-1]
+
+	// Show game information and confirm
+	appID := app.steamManager.GetSteamAppID(game)
+	steamURL := app.steamManager.GetShortcutURL(appID)
+
+	fmt.Printf("\nGame: %s\n", game.Name)
+	fmt.Printf("Executable: %s\n", game.Executable)
+	fmt.Printf("Steam App ID: %d\n", appID)
+	fmt.Printf("Steam URL: %s\n", steamURL)
+	fmt.Printf("\nNote: Steam must be restarted to see the new shortcut.\n")
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Add this game to Steam? (y/N): ")
+	response, _ := reader.ReadString('\n')
+	response = strings.ToLower(strings.TrimSpace(response))
+
+	if response != "y" && response != "yes" {
+		fmt.Println("Cancelled.")
+		return
+	}
+
+	fmt.Println("Adding game to Steam...")
+	err := app.steamManager.AddGameToSteam(game)
+	if err != nil {
+		fmt.Printf("Error adding game to Steam: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Successfully added '%s' to Steam!\n", game.Name)
+	fmt.Printf("App ID: %d\n", appID)
+	fmt.Printf("Steam URL: %s\n", steamURL)
+	fmt.Println("\nPlease restart Steam to see the new shortcut in your library.")
 }
 
 func main() {
