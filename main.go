@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 )
 
 func main() {
@@ -214,10 +215,26 @@ func addGameToSteamByNumber(gameNumber string) {
 
 	// Get the game
 	gameItem := games[index]
-	fmt.Printf("Adding '%s' to Steam...\n", gameItem.Name)
 
-	// Create Steam manager and add game
+	// Create Steam manager
 	steamManager := steam.NewManager()
+
+	// Check if game already exists in Steam
+	exists, err := steamManager.CheckGameExistsInSteam(gameItem)
+	if err != nil {
+		fmt.Printf("Warning: Could not check if game exists in Steam: %v\n", err)
+	}
+
+	var actionText string
+	if exists {
+		actionText = "Updating"
+		fmt.Printf("⚠️  Game already exists in Steam - updating existing shortcut\n")
+	} else {
+		actionText = "Adding"
+		fmt.Printf("✅ Adding new shortcut to Steam\n")
+	}
+
+	fmt.Printf("%s '%s' to Steam...\n", actionText, gameItem.Name)
 
 	// Show game information
 	appID := steamManager.GetSteamAppID(gameItem)
@@ -230,12 +247,15 @@ func addGameToSteamByNumber(gameNumber string) {
 
 	err = steamManager.AddGameToSteam(gameItem)
 	if err != nil {
-		fmt.Printf("Error adding game to Steam: %v\n", err)
+		fmt.Printf("Error %s game to Steam: %v\n", strings.ToLower(actionText), err)
 	} else {
-		fmt.Printf("Successfully added '%s' to Steam!\n", gameItem.Name)
-		fmt.Printf("App ID: %d\n", appID)
-		fmt.Printf("Steam URL: %s\n", steamURL)
-		fmt.Println("\nPlease restart Steam to see the new shortcut in your library.")
+		if exists {
+			fmt.Printf("Successfully updated '%s' in Steam!\n", gameItem.Name)
+		} else {
+			fmt.Printf("Successfully added '%s' to Steam!\n", gameItem.Name)
+		}
+		fmt.Printf("App ID: %d | Steam URL: %s\n", appID, steamURL)
+		fmt.Println("Please restart Steam to see the changes in your library.")
 	}
 }
 

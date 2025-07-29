@@ -1234,21 +1234,41 @@ func (mw *MainWindow) addSelectedGameToSteam() {
 	selectedGame := mw.games[mw.selectedGame]
 	mw.gamesMutex.RUnlock()
 
+	// Check if game already exists in Steam
+	exists, err := mw.steamManager.CheckGameExistsInSteam(selectedGame)
+	if err != nil {
+		// If we can't check, proceed anyway but log the warning
+		fmt.Printf("Warning: Could not check if game exists in Steam: %v\n", err)
+	}
+
 	// Show confirmation dialog with Steam information
 	appID := mw.steamManager.GetSteamAppID(selectedGame)
 	steamURL := mw.steamManager.GetShortcutURL(appID)
 
-	message := fmt.Sprintf("Add '%s' to Steam as a non-Steam shortcut?\n\nSteam App ID: %d\nSteam URL: %s\n\nNote: Steam must be restarted to see the new shortcut.",
-		selectedGame.Name, appID, steamURL)
+	var actionText, titleText string
+	if exists {
+		actionText = "update"
+		titleText = "Update Steam Shortcut"
+	} else {
+		actionText = "add"
+		titleText = "Add to Steam"
+	}
 
-	dialog.ShowConfirm("Add to Steam", message,
+	message := fmt.Sprintf("%s '%s' %s Steam as a non-Steam shortcut?\n\nSteam App ID: %d\nSteam URL: %s\n\nNote: Steam must be restarted to see changes.",
+		strings.Title(actionText), selectedGame.Name, 
+		map[bool]string{true: "in", false: "to"}[exists], 
+		appID, steamURL)
+
+	dialog.ShowConfirm(titleText, message,
 		func(confirm bool) {
 			if !confirm {
 				return
 			}
 
 			// Show progress dialog
-			progress := dialog.NewProgress("Adding to Steam", "Adding game to Steam...", mw.window)
+			progressText := fmt.Sprintf("%sing game %s Steam...", strings.Title(actionText), 
+				map[bool]string{true: "in", false: "to"}[exists])
+			progress := dialog.NewProgress(titleText, progressText, mw.window)
 			progress.Show()
 
 			go func() {
@@ -1257,15 +1277,18 @@ func (mw *MainWindow) addSelectedGameToSteam() {
 				// Add game to Steam
 				err := mw.steamManager.AddGameToSteam(selectedGame)
 				if err != nil {
-					dialog.ShowError(fmt.Errorf("failed to add game to Steam: %w", err), mw.window)
+					dialog.ShowError(fmt.Errorf("failed to %s game %s Steam: %w", actionText, 
+						map[bool]string{true: "in", false: "to"}[exists], err), mw.window)
 					return
 				}
 
 				// Show success dialog
-				successMessage := fmt.Sprintf("Successfully added '%s' to Steam!\n\nApp ID: %d\nSteam URL: %s\n\nPlease restart Steam to see the new shortcut in your library.",
-					selectedGame.Name, appID, steamURL)
+				successMessage := fmt.Sprintf("Successfully %sd '%s' %s Steam!\n\nApp ID: %d\nSteam URL: %s\n\nPlease restart Steam to see the changes in your library.",
+					actionText, selectedGame.Name, 
+					map[bool]string{true: "in", false: "to"}[exists], 
+					appID, steamURL)
 
-				dialog.ShowInformation("Added to Steam", successMessage, mw.window)
+				dialog.ShowInformation(fmt.Sprintf("%sd to Steam", strings.Title(actionText)), successMessage, mw.window)
 			}()
 		}, mw.window)
 }

@@ -500,18 +500,37 @@ func (app *ConsoleApp) addGameToSteam() {
 
 	game := app.games[choice-1]
 
+	// Check if game already exists in Steam
+	exists, err := app.steamManager.CheckGameExistsInSteam(game)
+	if err != nil {
+		fmt.Printf("Warning: Could not check if game exists in Steam: %v\n", err)
+	}
+
 	// Show game information and confirm
 	appID := app.steamManager.GetSteamAppID(game)
 	steamURL := app.steamManager.GetShortcutURL(appID)
+
+	var actionText string
+	if exists {
+		actionText = "update"
+		fmt.Printf("\n⚠️  Game already exists in Steam - this will update the existing shortcut\n")
+	} else {
+		actionText = "add"
+		fmt.Printf("\n✅ Game will be added as a new shortcut\n")
+	}
 
 	fmt.Printf("\nGame: %s\n", game.Name)
 	fmt.Printf("Executable: %s\n", game.Executable)
 	fmt.Printf("Steam App ID: %d\n", appID)
 	fmt.Printf("Steam URL: %s\n", steamURL)
-	fmt.Printf("\nNote: Steam must be restarted to see the new shortcut.\n")
+	fmt.Printf("\nNote: Steam must be restarted to see the changes.\n")
 
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Add this game to Steam? (y/N): ")
+	if exists {
+		fmt.Print("Update this game in Steam? (y/N): ")
+	} else {
+		fmt.Print("Add this game to Steam? (y/N): ")
+	}
 	response, _ := reader.ReadString('\n')
 	response = strings.ToLower(strings.TrimSpace(response))
 
@@ -520,17 +539,25 @@ func (app *ConsoleApp) addGameToSteam() {
 		return
 	}
 
-	fmt.Println("Adding game to Steam...")
-	err := app.steamManager.AddGameToSteam(game)
+	if exists {
+		fmt.Println("Updating game in Steam...")
+	} else {
+		fmt.Println("Adding game to Steam...")
+	}
+
+	err = app.steamManager.AddGameToSteam(game)
 	if err != nil {
-		fmt.Printf("Error adding game to Steam: %v\n", err)
+		fmt.Printf("Error %sing game to Steam: %v\n", actionText, err)
 		return
 	}
 
-	fmt.Printf("Successfully added '%s' to Steam!\n", game.Name)
-	fmt.Printf("App ID: %d\n", appID)
-	fmt.Printf("Steam URL: %s\n", steamURL)
-	fmt.Println("\nPlease restart Steam to see the new shortcut in your library.")
+	if exists {
+		fmt.Printf("Successfully updated '%s' in Steam!\n", game.Name)
+	} else {
+		fmt.Printf("Successfully added '%s' to Steam!\n", game.Name)
+	}
+	fmt.Printf("App ID: %d | Steam URL: %s\n", appID, steamURL)
+	fmt.Println("Please restart Steam to see the changes in your library.")
 }
 
 func main() {
