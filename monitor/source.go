@@ -31,17 +31,12 @@ func (m *SourceMonitor) CheckForUpdates(game *models.Game) (*UpdateInfo, error) 
 		return nil, fmt.Errorf("no source URL configured")
 	}
 
-	// Check GitHub releases
-	if strings.Contains(game.SourceURL, "github.com") {
-		return m.checkGitHubReleases(game)
-	}
-
 	// Check F95zone URLs
 	if strings.Contains(game.SourceURL, "f95zone.to") {
 		return m.checkF95zoneSource(game)
 	}
 
-	// Generic web scraping
+	// Generic web scraping for other sources
 	return m.checkGenericSource(game)
 }
 
@@ -52,57 +47,6 @@ type UpdateInfo struct {
 	URL         string
 	ReleaseDate time.Time
 	Description string
-}
-
-// checkGitHubReleases checks GitHub for new releases
-func (m *SourceMonitor) checkGitHubReleases(game *models.Game) (*UpdateInfo, error) {
-	// Convert GitHub URL to releases API
-	url := game.SourceURL
-	if strings.HasSuffix(url, "/") {
-		url = url[:len(url)-1]
-	}
-
-	// Extract owner/repo from GitHub URL
-	parts := strings.Split(url, "/")
-	if len(parts) < 5 {
-		return nil, fmt.Errorf("invalid GitHub URL")
-	}
-
-	owner := parts[len(parts)-2]
-	repo := parts[len(parts)-1]
-
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo)
-
-	resp, err := m.client.Get(apiURL)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
-	}
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse the JSON response (simplified - in a real app you'd use proper JSON parsing)
-	// For now, we'll just check if the page loads successfully
-	title := doc.Find("title").Text()
-
-	// This is a simplified check - in reality you'd parse the JSON response
-	// and compare versions properly
-	hasUpdate := game.Version == "" || strings.Contains(title, "latest")
-
-	return &UpdateInfo{
-		HasUpdate:   hasUpdate,
-		Version:     "latest", // You'd extract this from the JSON
-		URL:         apiURL,
-		ReleaseDate: time.Now(),
-		Description: "Latest release available",
-	}, nil
 }
 
 // checkF95zoneSource performs specialized scraping for F95zone game threads

@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -33,6 +34,7 @@ type MainWindow struct {
 	searchService *search.Service
 	steamManager  *steam.Manager
 	games         []*models.Game
+	gamesMutex    sync.RWMutex // Protects concurrent access to games slice
 	settings      *models.Settings
 	gameList      *widget.List
 	refreshTimer  *time.Timer
@@ -94,7 +96,11 @@ func (mw *MainWindow) setupUI() {
 
 	// Create game list with fixed-width columns using list widget
 	mw.gameList = widget.NewList(
-		func() int { return len(mw.games) },
+		func() int {
+			mw.gamesMutex.RLock()
+			defer mw.gamesMutex.RUnlock()
+			return len(mw.games)
+		},
 		func() fyne.CanvasObject {
 			// Create image and name container on the left
 			gameImage := canvas.NewImageFromResource(theme.ComputerIcon())
@@ -138,7 +144,13 @@ func (mw *MainWindow) setupUI() {
 			return container.NewBorder(nil, nil, nil, rightContainer, nameContainer)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
+			mw.gamesMutex.RLock()
+			if int(id) >= len(mw.games) {
+				mw.gamesMutex.RUnlock()
+				return // Prevent index out of bounds
+			}
 			game := mw.games[id]
+			mw.gamesMutex.RUnlock()
 			borderContainer := obj.(*fyne.Container)
 
 			// Border structure: [center, right] - only 2 objects
@@ -317,7 +329,9 @@ func (mw *MainWindow) importGames() {
 			}
 
 			if !exists {
+				mw.gamesMutex.Lock()
 				mw.games = append(mw.games, newGame)
+				mw.gamesMutex.Unlock()
 			}
 		}
 
@@ -389,7 +403,10 @@ func (mw *MainWindow) addGame() {
 			newGame := models.NewGame(nameEntry.Text, execEntry.Text, "")
 			newGame.SourceURL = urlEntry.Text
 
+			mw.gamesMutex.Lock()
 			mw.games = append(mw.games, newGame)
+			mw.gamesMutex.Unlock()
+
 			mw.saveGames()
 			mw.gameList.Refresh()
 		},
@@ -666,13 +683,16 @@ func (mw *MainWindow) editGame(game *models.Game) {
 
 // deleteSelectedGame deletes the currently selected game
 func (mw *MainWindow) deleteSelectedGame() {
+	mw.gamesMutex.RLock()
 	if mw.selectedGame < 0 || mw.selectedGame >= len(mw.games) {
+		mw.gamesMutex.RUnlock()
 		dialog.ShowInformation("No Game Selected",
 			"Please select a game to delete.", mw.window)
 		return
 	}
 
 	game := mw.games[mw.selectedGame]
+	mw.gamesMutex.RUnlock()
 
 	// Show confirmation dialog
 	dialog.ShowConfirm("Delete Game",
@@ -683,7 +703,9 @@ func (mw *MainWindow) deleteSelectedGame() {
 			}
 
 			// Remove game from slice
+			mw.gamesMutex.Lock()
 			mw.games = append(mw.games[:mw.selectedGame], mw.games[mw.selectedGame+1:]...)
+			mw.gamesMutex.Unlock()
 
 			// Reset selection
 			mw.selectedGame = -1
@@ -846,9 +868,15 @@ func (mw *MainWindow) parseVersionPart(part string) int {
 func (mw *MainWindow) refreshAllVersionChecks() {
 	// Run initial version checks for all games at startup
 	go func() {
-		fmt.Printf("DEBUG: Running startup version checks for %d games\n", len(mw.games))
+		// Get a copy of games to iterate over (to avoid holding lock for too long)
+		mw.gamesMutex.RLock()
+		gamesCopy := make([]*models.Game, len(mw.games))
+		copy(gamesCopy, mw.games)
+		mw.gamesMutex.RUnlock()
 
-		for _, game := range mw.games {
+		fmt.Printf("DEBUG: Running startup version checks for %d games\n", len(gamesCopy))
+
+		for _, game := range gamesCopy {
 			if game.SourceURL != "" {
 				fmt.Printf("DEBUG: Checking version for %s\n", game.Name)
 				updateInfo, err := mw.monitor.CheckForUpdates(game)
@@ -878,8 +906,14 @@ func (mw *MainWindow) checkAllUpdates() {
 	go func() {
 		defer progress.Hide()
 
-		for i, game := range mw.games {
-			progress.SetValue(float64(i) / float64(len(mw.games)))
+		// Get a copy of games to iterate over (to avoid holding lock for too long)
+		mw.gamesMutex.RLock()
+		gamesCopy := make([]*models.Game, len(mw.games))
+		copy(gamesCopy, mw.games)
+		mw.gamesMutex.RUnlock()
+
+		for i, game := range gamesCopy {
+			progress.SetValue(float64(i) / float64(len(gamesCopy)))
 
 			if game.SourceURL != "" {
 				updateInfo, err := mw.monitor.CheckForUpdates(game)
@@ -936,6 +970,9 @@ func (mw *MainWindow) showSettings() {
 
 // saveGames saves the games list to storage
 func (mw *MainWindow) saveGames() {
+	mw.gamesMutex.RLock()
+	defer mw.gamesMutex.RUnlock()
+
 	err := mw.storage.SaveGames(mw.games)
 	if err != nil {
 		dialog.ShowError(err, mw.window)
@@ -955,6 +992,10 @@ func (mw *MainWindow) startUpdateTimer() {
 	if mw.settings.CheckInterval > 0 {
 		mw.refreshTimer = time.AfterFunc(time.Duration(mw.settings.CheckInterval)*time.Second, func() {
 			mw.checkAllUpdates()
+			// Stop the current timer before creating a new one to prevent memory leaks
+			if mw.refreshTimer != nil {
+				mw.refreshTimer.Stop()
+			}
 			mw.startUpdateTimer() // Restart timer
 		})
 	}
@@ -964,6 +1005,7 @@ func (mw *MainWindow) startUpdateTimer() {
 func (mw *MainWindow) restartUpdateTimer() {
 	if mw.refreshTimer != nil {
 		mw.refreshTimer.Stop()
+		mw.refreshTimer = nil // Clear the reference
 	}
 	mw.startUpdateTimer()
 }
@@ -973,14 +1015,18 @@ func (mw *MainWindow) searchForGame() {
 	fmt.Printf("DEBUG: searchForGame called\n")
 
 	// Check if a game is selected
+	mw.gamesMutex.RLock()
 	if mw.selectedGame < 0 || mw.selectedGame >= len(mw.games) {
-		fmt.Printf("DEBUG: No game selected (selectedGame=%d, len(games)=%d)\n", mw.selectedGame, len(mw.games))
+		gameCount := len(mw.games)
+		mw.gamesMutex.RUnlock()
+		fmt.Printf("DEBUG: No game selected (selectedGame=%d, len(games)=%d)\n", mw.selectedGame, gameCount)
 		dialog.ShowInformation("No Game Selected",
 			"Please select a game to search for its source link.", mw.window)
 		return
 	}
 
 	selectedGame := mw.games[mw.selectedGame]
+	mw.gamesMutex.RUnlock()
 	fmt.Printf("DEBUG: Selected game: %s (current SourceURL: %s)\n", selectedGame.Name, selectedGame.SourceURL)
 
 	// Show progress dialog
@@ -1047,13 +1093,19 @@ func (mw *MainWindow) fetchImagesForAllGames() {
 	go func() {
 		defer progress.Hide()
 
-		totalGames := len(mw.games)
+		// Get a copy of games to iterate over
+		mw.gamesMutex.RLock()
+		gamesCopy := make([]*models.Game, len(mw.games))
+		copy(gamesCopy, mw.games)
+		mw.gamesMutex.RUnlock()
+
+		totalGames := len(gamesCopy)
 		downloadedCount := 0
 		failedCount := 0
 
 		fmt.Printf("DEBUG: Starting image fetch for %d games\n", totalGames)
 
-		for i, game := range mw.games {
+		for i, game := range gamesCopy {
 			// Update progress
 			progress.SetValue(float64(i) / float64(totalGames))
 
@@ -1171,13 +1223,16 @@ func (mw *MainWindow) redownloadImageForGame(game *models.Game) {
 
 // addSelectedGameToSteam adds the currently selected game to Steam as a non-Steam shortcut
 func (mw *MainWindow) addSelectedGameToSteam() {
+	mw.gamesMutex.RLock()
 	if mw.selectedGame < 0 || mw.selectedGame >= len(mw.games) {
+		mw.gamesMutex.RUnlock()
 		dialog.ShowInformation("No Game Selected",
 			"Please select a game to add to Steam.", mw.window)
 		return
 	}
 
 	selectedGame := mw.games[mw.selectedGame]
+	mw.gamesMutex.RUnlock()
 
 	// Show confirmation dialog with Steam information
 	appID := mw.steamManager.GetSteamAppID(selectedGame)
