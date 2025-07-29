@@ -319,10 +319,16 @@ func (mw *MainWindow) importGames() {
 
 		// Add new games to the list
 		for _, newGame := range games {
-			// Check if game already exists
+			// Check if game already exists by name (case-insensitive)
 			exists := false
+			normalizedNewName := strings.ToLower(strings.TrimSpace(newGame.Name))
+
 			for _, existingGame := range mw.games {
-				if existingGame.Executable == newGame.Executable {
+				normalizedExistingName := strings.ToLower(strings.TrimSpace(existingGame.Name))
+				if normalizedExistingName == normalizedNewName {
+					// Game with same name exists, update the executable path instead of adding duplicate
+					existingGame.Executable = newGame.Executable
+					existingGame.Folder = newGame.Folder
 					exists = true
 					break
 				}

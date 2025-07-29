@@ -24,23 +24,23 @@ func NewManager() *Manager {
 
 // SteamShortcut represents a Steam non-Steam shortcut
 type SteamShortcut struct {
-	AppID              uint32
-	AppName            string
-	Exe                string
-	StartDir           string
-	Icon               string
-	ShortcutPath       string
-	LaunchOptions      string
-	IsHidden           bool
-	AllowDesktopConfig bool
-	AllowOverlay       bool
-	OpenVR             bool
-	Devkit             bool
-	DevkitGameID       string
+	AppID               uint32
+	AppName             string
+	Exe                 string
+	StartDir            string
+	Icon                string
+	ShortcutPath        string
+	LaunchOptions       string
+	IsHidden            bool
+	AllowDesktopConfig  bool
+	AllowOverlay        bool
+	OpenVR              bool
+	Devkit              bool
+	DevkitGameID        string
 	DevkitOverrideAppID uint32
-	LastPlayTime       uint32
-	FlatpakAppID       string
-	Tags               []string
+	LastPlayTime        uint32
+	FlatpakAppID        string
+	Tags                []string
 }
 
 // AddGameToSteam adds a game to Steam as a non-Steam shortcut
@@ -59,14 +59,14 @@ func (m *Manager) AddGameToSteam(game *models.Game) error {
 
 	// Create shortcut from game
 	shortcut := m.createShortcutFromGame(game)
-	
+
 	// Check if game already exists in Steam
 	shortcutsPath := filepath.Join(userDataPath, "config", "shortcuts.vdf")
 	isUpdate, err := m.checkGameExistsInSteam(shortcutsPath, game)
 	if err != nil {
 		log.Printf("Warning: Could not check for existing shortcuts: %v", err)
 	}
-	
+
 	if isUpdate {
 		log.Printf("Updating existing Steam shortcut for game: %s (AppID: %d)", game.Name, shortcut.AppID)
 	} else {
@@ -112,20 +112,19 @@ func (m *Manager) checkGameExistsInSteam(shortcutsPath string, game *models.Game
 	// Generate the AppID and normalized values for the game
 	appID := m.generateAppID(game.Name, game.Executable)
 	normalizedName := m.normalizeName(game.Name)
-	normalizedExe := m.normalizePath(game.Executable)
 
 	// Check if shortcut already exists
 	for _, existing := range shortcuts {
-		// Primary check: same AppID
+		// Primary check: same AppID (now based only on game name)
 		if existing.AppID == appID {
 			return true, nil
 		}
-		
-		// Secondary check: same normalized name and executable
+
+		// Secondary check: same normalized name
+		// This provides additional safety for games that might have been added
+		// before the AppID generation change
 		existingNormalizedName := m.normalizeName(existing.AppName)
-		existingNormalizedExe := m.normalizePath(existing.Exe)
-		
-		if existingNormalizedName == normalizedName && existingNormalizedExe == normalizedExe {
+		if existingNormalizedName == normalizedName {
 			return true, nil
 		}
 	}
@@ -173,7 +172,7 @@ func (m *Manager) findSteamPath() (string, error) {
 // findUserDataPath finds the Steam userdata directory for the current user
 func (m *Manager) findUserDataPath(steamPath string) (string, error) {
 	userDataDir := filepath.Join(steamPath, "userdata")
-	
+
 	// Check if userdata directory exists
 	if _, err := os.Stat(userDataDir); os.IsNotExist(err) {
 		return "", fmt.Errorf("Steam userdata directory not found")
@@ -193,7 +192,7 @@ func (m *Manager) findUserDataPath(steamPath string) (string, error) {
 		if entry.IsDir() {
 			userPath := filepath.Join(userDataDir, entry.Name())
 			configPath := filepath.Join(userPath, "config")
-			
+
 			// Check if this user directory has a config folder
 			if stat, err := os.Stat(configPath); err == nil {
 				if stat.ModTime().Unix() > latestModTime {
@@ -229,34 +228,36 @@ func (m *Manager) createShortcutFromGame(game *models.Game) *SteamShortcut {
 	}
 
 	return &SteamShortcut{
-		AppID:              appID,
-		AppName:            game.Name,
-		Exe:                game.Executable,
-		StartDir:           startDir,
-		Icon:               icon,
-		ShortcutPath:       "",
-		LaunchOptions:      "",
-		IsHidden:           false,
-		AllowDesktopConfig: true,
-		AllowOverlay:       true,
-		OpenVR:             false,
-		Devkit:             false,
-		DevkitGameID:       "",
+		AppID:               appID,
+		AppName:             game.Name,
+		Exe:                 game.Executable,
+		StartDir:            startDir,
+		Icon:                icon,
+		ShortcutPath:        "",
+		LaunchOptions:       "",
+		IsHidden:            false,
+		AllowDesktopConfig:  true,
+		AllowOverlay:        true,
+		OpenVR:              false,
+		Devkit:              false,
+		DevkitGameID:        "",
 		DevkitOverrideAppID: 0,
-		LastPlayTime:       0,
-		FlatpakAppID:       "",
-		Tags:               []string{},
+		LastPlayTime:        0,
+		FlatpakAppID:        "",
+		Tags:                []string{},
 	}
 }
 
-// generateAppID generates a unique AppID for the shortcut based on name and executable
+// generateAppID generates a unique AppID for the shortcut based on name only
 func (m *Manager) generateAppID(appName, exe string) uint32 {
-	// Normalize name and executable path to ensure consistency
+	// Normalize name to ensure consistency across different executable paths
 	normalizedName := m.normalizeName(appName)
-	normalizedExe := m.normalizePath(exe)
-	
-	// Steam uses CRC32 of name + exe + null terminator, with high bit set
-	input := normalizedName + normalizedExe + "\x00"
+
+	// Steam uses CRC32 of name + null terminator, with high bit set
+	// Note: We only use the name now, not the executable path
+	// This ensures that games with the same name but different executable paths
+	// (e.g., when updating to newer versions) get the same AppID
+	input := normalizedName + "\x00"
 	crc := crc32.ChecksumIEEE([]byte(input))
 	return crc | 0x80000000
 }
@@ -273,10 +274,10 @@ func (m *Manager) normalizeName(name string) string {
 func (m *Manager) normalizePath(path string) string {
 	// Remove surrounding quotes
 	path = strings.Trim(path, `"'`)
-	
+
 	// Normalize path separators and clean the path
 	path = filepath.Clean(path)
-	
+
 	// Convert to absolute path if possible for consistency
 	if !filepath.IsAbs(path) {
 		absPath, err := filepath.Abs(path)
@@ -284,10 +285,10 @@ func (m *Manager) normalizePath(path string) string {
 			path = absPath
 		}
 	}
-	
+
 	// Convert to lowercase for case-insensitive comparison
 	path = strings.ToLower(path)
-	
+
 	return path
 }
 
@@ -300,23 +301,22 @@ func (m *Manager) addShortcutToFile(shortcutsPath string, shortcut *SteamShortcu
 		shortcuts = []*SteamShortcut{}
 	}
 
-	// Check if shortcut already exists (by AppID or by normalized name/exe combination)
+	// Check if shortcut already exists (by AppID or by normalized name)
 	existingIndex := -1
 	normalizedName := m.normalizeName(shortcut.AppName)
-	normalizedExe := m.normalizePath(shortcut.Exe)
-	
+
 	for i, existing := range shortcuts {
-		// Primary check: same AppID
+		// Primary check: same AppID (now based only on game name)
 		if existing.AppID == shortcut.AppID {
 			existingIndex = i
 			break
 		}
-		
-		// Secondary check: same normalized name and executable
+
+		// Secondary check: same normalized name
+		// This provides additional safety for games that might have been added
+		// before the AppID generation change
 		existingNormalizedName := m.normalizeName(existing.AppName)
-		existingNormalizedExe := m.normalizePath(existing.Exe)
-		
-		if existingNormalizedName == normalizedName && existingNormalizedExe == normalizedExe {
+		if existingNormalizedName == normalizedName {
 			existingIndex = i
 			break
 		}
@@ -740,4 +740,4 @@ func (m *Manager) CheckSteamRunning() (bool, error) {
 		// Implementation would use ps or similar
 		return false, nil
 	}
-} 
+}
