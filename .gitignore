@@ -1,0 +1,54 @@
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.o
+*.obj
+
+# Go build artifacts
+gamelauncher
+gamelauncher.exe
+gamelauncher_console
+gamelauncher_console.exe
+
+# Go cache and temporary files
+go.sum
+*.test
+*.prof
+*.out
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Log files
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Configuration files with sensitive data
+config.json
+.env
+.env.local
+
+# Backup files
+*.bak
+*.backup 

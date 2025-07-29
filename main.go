@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"gamelauncher/game"
+	"gamelauncher/search"
 	"gamelauncher/storage"
 	"gamelauncher/ui"
 	"log"
@@ -42,6 +43,13 @@ func handleCommandLineArgs() {
 		launchGameByNumber(args[1])
 	case "-list", "--list":
 		listGames()
+	case "-search", "--search":
+		if len(args) < 2 {
+			fmt.Println("Error: Game name required")
+			showUsage()
+			return
+		}
+		searchForGame(args[1])
 	case "-help", "--help", "-h", "--h":
 		showUsage()
 	default:
@@ -119,6 +127,50 @@ func listGames() {
 	}
 }
 
+// searchForGame searches for a game on F95Zone and displays the results
+func searchForGame(gameName string) {
+	searchService := search.NewService()
+
+	fmt.Printf("Searching for '%s' on F95Zone...\n", gameName)
+
+	results, err := searchService.SearchGame(gameName)
+	if err != nil {
+		fmt.Printf("Error searching for game: %v\n", err)
+		return
+	}
+
+	if len(results) == 0 {
+		fmt.Printf("No matches found for '%s' on F95Zone.\n", gameName)
+		return
+	}
+
+	fmt.Printf("\nFound %d matches for '%s':\n", len(results), gameName)
+	fmt.Println("==========================================")
+
+	for i, result := range results {
+		score := fmt.Sprintf("%.1f%%", result.MatchScore*100)
+		fmt.Printf("%d. [%s] %s\n", i+1, score, result.Title)
+		fmt.Printf("   Link: %s\n", result.Link)
+		if result.Description != "" {
+			fmt.Printf("   Description: %s\n", result.Description)
+		}
+		fmt.Println()
+	}
+
+	// Show the best match
+	if len(results) > 0 {
+		bestMatch := results[0]
+		for _, result := range results {
+			if result.MatchScore > bestMatch.MatchScore {
+				bestMatch = result
+			}
+		}
+
+		fmt.Printf("Best match: %s (%.1f%%)\n", bestMatch.Title, bestMatch.MatchScore*100)
+		fmt.Printf("Link: %s\n", bestMatch.Link)
+	}
+}
+
 // showUsage displays command-line usage information
 func showUsage() {
 	fmt.Println("Game Launcher - Command Line Usage")
@@ -130,10 +182,12 @@ func showUsage() {
 	fmt.Println("Command Line Options:")
 	fmt.Println("  -game <number>     Launch game by number")
 	fmt.Println("  -list              List all available games")
+	fmt.Println("  -search <name>     Search for game on F95Zone")
 	fmt.Println("  -help              Show this help message")
 	fmt.Println()
 	fmt.Println("Examples:")
-	fmt.Println("  gamelauncher.exe -game 1    # Launch the first game")
-	fmt.Println("  gamelauncher.exe -list      # List all games")
-	fmt.Println("  gamelauncher.exe -help      # Show help")
+	fmt.Println("  gamelauncher.exe -game 1        # Launch the first game")
+	fmt.Println("  gamelauncher.exe -list          # List all games")
+	fmt.Println("  gamelauncher.exe -search \"My Pig Princess\"  # Search for a game")
+	fmt.Println("  gamelauncher.exe -help          # Show help")
 }

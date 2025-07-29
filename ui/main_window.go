@@ -5,6 +5,7 @@ import (
 	"gamelauncher/game"
 	"gamelauncher/models"
 	"gamelauncher/monitor"
+	"gamelauncher/search"
 	"gamelauncher/storage"
 	"image/color"
 	"strconv"
@@ -21,16 +22,17 @@ import (
 
 // MainWindow represents the main application window
 type MainWindow struct {
-	app          fyne.App
-	window       fyne.Window
-	gameManager  *game.Manager
-	storage      *storage.Manager
-	monitor      *monitor.SourceMonitor
-	games        []*models.Game
-	settings     *models.Settings
-	gameList     *widget.List
-	refreshTimer *time.Timer
-	selectedGame int // Track selected game index
+	app           fyne.App
+	window        fyne.Window
+	gameManager   *game.Manager
+	storage       *storage.Manager
+	monitor       *monitor.SourceMonitor
+	searchService *search.Service
+	games         []*models.Game
+	settings      *models.Settings
+	gameList      *widget.List
+	refreshTimer  *time.Timer
+	selectedGame  int // Track selected game index
 }
 
 // NewMainWindow creates a new main window
@@ -42,12 +44,13 @@ func NewMainWindow() *MainWindow {
 	window.Resize(fyne.NewSize(800, 600))
 
 	mw := &MainWindow{
-		app:          myApp,
-		window:       window,
-		gameManager:  game.NewManager(),
-		storage:      storage.NewManager(),
-		monitor:      monitor.NewSourceMonitor(),
-		selectedGame: -1, // Initialize to no selection
+		app:           myApp,
+		window:        window,
+		gameManager:   game.NewManager(),
+		storage:       storage.NewManager(),
+		monitor:       monitor.NewSourceMonitor(),
+		searchService: search.NewService(),
+		selectedGame:  -1, // Initialize to no selection
 	}
 
 	mw.loadData()
@@ -102,6 +105,10 @@ func (mw *MainWindow) setupUI() {
 			fetchedVersionLabel := NewColoredLabel("Fetched Version", color.White, color.Black)
 			fetchedVersionContainer := container.NewHBox(fetchedVersionLabel)
 
+			// Source URL column - compact
+			sourceURLLabel := widget.NewLabel("Source URL")
+			sourceURLContainer := container.NewHBox(sourceURLLabel)
+
 			// Launch button column - compact
 			launchBtn := widget.NewButton("Launch", nil)
 			launchContainer := container.NewHBox(launchBtn)
@@ -113,6 +120,7 @@ func (mw *MainWindow) setupUI() {
 			// Add all right-side elements
 			rightContainer.Add(currentVersionContainer)
 			rightContainer.Add(fetchedVersionContainer)
+			rightContainer.Add(sourceURLContainer)
 			rightContainer.Add(launchContainer)
 			rightContainer.Add(editContainer)
 
@@ -155,8 +163,17 @@ func (mw *MainWindow) setupUI() {
 							}
 						}
 
-						// Update launch button (third element)
-						if launchContainer, ok := rightContainer.Objects[2].(*fyne.Container); ok {
+						// Update source URL (third element)
+						if sourceURLContainer, ok := rightContainer.Objects[2].(*fyne.Container); ok {
+							if len(sourceURLContainer.Objects) > 0 {
+								if sourceURLLabel, ok := sourceURLContainer.Objects[0].(*widget.Label); ok {
+									sourceURLLabel.SetText(mw.truncateText(game.SourceURL, 20))
+								}
+							}
+						}
+
+						// Update launch button (fourth element)
+						if launchContainer, ok := rightContainer.Objects[3].(*fyne.Container); ok {
 							if len(launchContainer.Objects) > 0 {
 								if launchBtn, ok := launchContainer.Objects[0].(*widget.Button); ok {
 									launchBtn.OnTapped = func() {
@@ -166,8 +183,8 @@ func (mw *MainWindow) setupUI() {
 							}
 						}
 
-						// Update edit button (fourth element)
-						if editContainer, ok := rightContainer.Objects[3].(*fyne.Container); ok {
+						// Update edit button (fifth element)
+						if editContainer, ok := rightContainer.Objects[4].(*fyne.Container); ok {
 							if len(editContainer.Objects) > 0 {
 								if editBtn, ok := editContainer.Objects[0].(*widget.Button); ok {
 									editBtn.OnTapped = func() {
@@ -208,6 +225,9 @@ func (mw *MainWindow) createToolbar() *widget.Toolbar {
 			mw.deleteSelectedGame()
 		}),
 		widget.NewToolbarSeparator(),
+		widget.NewToolbarAction(theme.SearchIcon(), func() {
+			mw.searchForGame()
+		}),
 		widget.NewToolbarAction(theme.ViewRefreshIcon(), func() {
 			mw.checkAllUpdates()
 		}),
@@ -273,7 +293,7 @@ func (mw *MainWindow) addGame() {
 	execEntry.Disable() // Make it read-only
 
 	urlEntry := widget.NewEntry()
-	urlEntry.SetPlaceHolder("Source URL (optional)")
+	urlEntry.SetPlaceHolder("Source URL (will be auto-filled if found)")
 
 	// Create browse button
 	browseBtn := widget.NewButton("Browse", func() {
@@ -292,11 +312,23 @@ func (mw *MainWindow) addGame() {
 	// Create executable selection container
 	execContainer := container.NewBorder(nil, nil, nil, browseBtn, execEntry)
 
+	// Add search button
+	searchBtn := widget.NewButton("Search for Link", func() {
+		if nameEntry.Text == "" {
+			dialog.ShowInformation("No Game Name", "Please enter a game name first.", mw.window)
+			return
+		}
+		mw.autoSearchForGame(nameEntry.Text, urlEntry)
+	})
+
+	// Create URL container with search button
+	urlContainer := container.NewBorder(nil, nil, nil, searchBtn, urlEntry)
+
 	form := dialog.NewForm("Add Game", "Add", "Cancel",
 		[]*widget.FormItem{
 			widget.NewFormItem("Name", nameEntry),
 			widget.NewFormItem("Executable", execContainer),
-			widget.NewFormItem("Source URL", urlEntry),
+			widget.NewFormItem("Source URL", urlContainer),
 		},
 		func(confirm bool) {
 			if !confirm {
@@ -317,8 +349,121 @@ func (mw *MainWindow) addGame() {
 		},
 		mw.window)
 
-	form.Resize(fyne.NewSize(500, 250))
+	form.Resize(fyne.NewSize(500, 300))
 	form.Show()
+}
+
+// autoSearchForGame automatically searches for a game link and updates the URL entry
+func (mw *MainWindow) autoSearchForGame(gameName string, urlEntry *widget.Entry) {
+	// Show progress dialog
+	progress := dialog.NewProgress("Searching", "Searching for game link...", mw.window)
+	progress.Show()
+
+	go func() {
+		defer progress.Hide()
+
+		// Search for the game
+		results, err := mw.searchService.SearchGame(gameName)
+		if err != nil {
+			dialog.ShowError(fmt.Errorf("search failed: %w", err), mw.window)
+			return
+		}
+
+		if len(results) == 0 {
+			dialog.ShowInformation("No Results",
+				fmt.Sprintf("No matches found for '%s' on F95Zone.", gameName), mw.window)
+			return
+		}
+
+		// Find the best match
+		bestMatch := results[0]
+		for _, result := range results {
+			if result.MatchScore > bestMatch.MatchScore {
+				bestMatch = result
+			}
+		}
+
+		// If we have a good match (above 70%), auto-fill it
+		if bestMatch.MatchScore > 0.7 {
+			// Update UI on main thread using the app's main thread
+			mw.app.SendNotification(&fyne.Notification{
+				Title: fmt.Sprintf("Link Found for %s", gameName),
+			})
+
+			// Use the main thread to update the entry
+			urlEntry.SetText(bestMatch.Link)
+			urlEntry.Refresh()
+
+			dialog.ShowInformation("Link Found",
+				fmt.Sprintf("Auto-filled source URL for '%s':\n%s", gameName, bestMatch.Link), mw.window)
+		} else {
+			// Show results dialog for manual selection
+			mw.showSearchResultsForNewGame(gameName, results, urlEntry)
+		}
+	}()
+}
+
+// showSearchResultsForNewGame shows search results for a new game being added
+func (mw *MainWindow) showSearchResultsForNewGame(gameName string, results []search.SearchResult, urlEntry *widget.Entry) {
+	// Create a list of result strings for display
+	var resultStrings []string
+	var selectedIndex int
+	for _, result := range results {
+		score := fmt.Sprintf("%.1f%%", result.MatchScore*100)
+		resultString := fmt.Sprintf("[%s] %s", score, result.Title)
+		resultStrings = append(resultStrings, resultString)
+	}
+
+	// Create a list widget for results
+	resultList := widget.NewList(
+		func() int { return len(resultStrings) },
+		func() fyne.CanvasObject {
+			return widget.NewLabel("Result")
+		},
+		func(id widget.ListItemID, obj fyne.CanvasObject) {
+			label := obj.(*widget.Label)
+			label.SetText(resultStrings[id])
+		},
+	)
+
+	// Track selected item
+	resultList.OnSelected = func(id widget.ListItemID) {
+		selectedIndex = int(id)
+	}
+
+	// Create dialog content
+	content := container.NewBorder(
+		widget.NewLabel(fmt.Sprintf("Search results for '%s':", gameName)),
+		nil, nil, nil,
+		resultList,
+	)
+
+	// Create the dialog
+	dialog.ShowCustomConfirm("Search Results", "Select", "Cancel", content,
+		func(confirm bool) {
+			if !confirm {
+				return
+			}
+
+			// Get selected result
+			if selectedIndex < 0 || selectedIndex >= len(results) {
+				return
+			}
+
+			selectedResult := results[selectedIndex]
+
+			// Update the URL entry on main thread
+			urlEntry.SetText(selectedResult.Link)
+			urlEntry.Refresh()
+
+			dialog.ShowInformation("Link Selected",
+				fmt.Sprintf("Source URL updated to:\n%s", selectedResult.Link), mw.window)
+		}, mw.window)
+
+	// Set initial selection
+	if len(resultStrings) > 0 {
+		resultList.Select(0)
+	}
 }
 
 // launchGame launches a game
@@ -444,12 +589,8 @@ func (mw *MainWindow) deleteSelectedGame() {
 		}, mw.window)
 }
 
-// updateFetchedVersionLabel updates the fetched version label with color coding
+// updateFetchedVersionLabel updates the fetched version label with cached information only
 func (mw *MainWindow) updateFetchedVersionLabel(game *models.Game, label *ColoredLabel) {
-	// Set default text and color
-	label.SetText("Checking...")
-	label.Refresh()
-
 	// If no source URL, show as unavailable
 	if game.SourceURL == "" {
 		label.SetText("No source")
@@ -457,73 +598,47 @@ func (mw *MainWindow) updateFetchedVersionLabel(game *models.Game, label *Colore
 		return
 	}
 
-	// Check for updates in a goroutine to avoid blocking the UI
-	go func() {
-		updateInfo, err := mw.monitor.CheckForUpdates(game)
-
-		// Update UI on the main thread using the app's main thread
-		mw.app.SendNotification(&fyne.Notification{
-			Title: fmt.Sprintf("Version Check - %s", game.Name),
-		})
-
-		// Use the main thread to update the label
-		mw.window.Canvas().Refresh(label)
-
-		if err != nil {
-			label.SetText("Error")
-			label.Refresh()
-			return
-		}
-
-		if updateInfo.Version == "" {
-			label.SetText("Not found")
-			label.Refresh()
-			return
-		}
-
-		// Debug: Print the exact values being compared
-		fmt.Printf("DEBUG: Game='%s', CurrentVersion='%s' (len=%d), FoundVersion='%s' (len=%d), Equal=%t\n",
-			game.Name, game.CurrentVersion, len(game.CurrentVersion), updateInfo.Version, len(updateInfo.Version),
-			updateInfo.Version == game.CurrentVersion)
-
-		// Compare versions and set text with color indicators
+	// Check if we have cached version information
+	if game.Version != "" {
+		// Display cached version information
 		var displayText string
 		var bgColor, textColor color.Color
 
-		if updateInfo.Version == game.CurrentVersion {
+		if game.Version == game.CurrentVersion {
 			// Same version - show with green background
-			displayText = updateInfo.Version
+			displayText = game.Version
 			bgColor = color.NRGBA{R: 0, G: 255, B: 0, A: 100} // Light green
 			textColor = color.Black
-			fmt.Printf("DEBUG: Setting label to: '%s' (GREEN)\n", displayText)
-		} else if updateInfo.Version != "" && updateInfo.Version != game.CurrentVersion {
+		} else if game.Version != "" && game.Version != game.CurrentVersion {
 			// Different version - determine if it's newer
-			if mw.isVersionNewer(updateInfo.Version, game.CurrentVersion) {
+			if mw.isVersionNewer(game.Version, game.CurrentVersion) {
 				// Newer version available - show with red background
-				displayText = updateInfo.Version + " [NEW]"
+				displayText = game.Version + " [NEW]"
 				bgColor = color.NRGBA{R: 255, G: 0, B: 0, A: 100} // Light red
 				textColor = color.White
 			} else {
 				// Different version but not newer - show with orange background
-				displayText = updateInfo.Version + " [DIFF]"
+				displayText = game.Version + " [DIFF]"
 				bgColor = color.NRGBA{R: 255, G: 165, B: 0, A: 100} // Light orange
 				textColor = color.Black
 			}
 		} else {
-			// No version found or error
-			displayText = "Not found"
+			// No cached version
+			displayText = "Not checked"
 			bgColor = color.NRGBA{R: 128, G: 128, B: 128, A: 100} // Light gray
 			textColor = color.Black
 		}
 
-		// Update the label on the main thread
-		label.SetText(mw.truncateText(displayText, 20)) // Truncate fetched version text
+		// Update the label
+		label.SetText(mw.truncateText(displayText, 20))
 		label.SetColors(bgColor, textColor)
 		label.Refresh()
-
-		// Force a canvas refresh
-		mw.window.Canvas().Refresh(label)
-	}()
+	} else {
+		// No cached version - show as not checked
+		label.SetText("Not checked")
+		label.SetColors(color.NRGBA{R: 128, G: 128, B: 128, A: 100}, color.Black)
+		label.Refresh()
+	}
 }
 
 // truncateText truncates text to the specified length and adds ellipsis if needed
@@ -619,8 +734,30 @@ func (mw *MainWindow) parseVersionPart(part string) int {
 
 // refreshAllVersionChecks refreshes version checks for all games
 func (mw *MainWindow) refreshAllVersionChecks() {
-	// Refresh the list to trigger version checks for all games
-	mw.gameList.Refresh()
+	// Run initial version checks for all games at startup
+	go func() {
+		fmt.Printf("DEBUG: Running startup version checks for %d games\n", len(mw.games))
+
+		for _, game := range mw.games {
+			if game.SourceURL != "" {
+				fmt.Printf("DEBUG: Checking version for %s\n", game.Name)
+				updateInfo, err := mw.monitor.CheckForUpdates(game)
+				if err == nil {
+					game.UpdateInfo(updateInfo.Version)
+					game.MarkChecked()
+					fmt.Printf("DEBUG: Updated %s version to %s\n", game.Name, updateInfo.Version)
+				} else {
+					fmt.Printf("DEBUG: Error checking %s: %v\n", game.Name, err)
+				}
+			}
+		}
+
+		// Save the updated version information
+		mw.saveGames()
+
+		// Refresh the UI to show the updated version information
+		mw.gameList.Refresh()
+	}()
 }
 
 // checkAllUpdates checks for updates on all games
@@ -719,4 +856,74 @@ func (mw *MainWindow) restartUpdateTimer() {
 		mw.refreshTimer.Stop()
 	}
 	mw.startUpdateTimer()
+}
+
+// searchForGame searches for a game on F95Zone and allows the user to select a result
+func (mw *MainWindow) searchForGame() {
+	fmt.Printf("DEBUG: searchForGame called\n")
+
+	// Check if a game is selected
+	if mw.selectedGame < 0 || mw.selectedGame >= len(mw.games) {
+		fmt.Printf("DEBUG: No game selected (selectedGame=%d, len(games)=%d)\n", mw.selectedGame, len(mw.games))
+		dialog.ShowInformation("No Game Selected",
+			"Please select a game to search for its source link.", mw.window)
+		return
+	}
+
+	selectedGame := mw.games[mw.selectedGame]
+	fmt.Printf("DEBUG: Selected game: %s (current SourceURL: %s)\n", selectedGame.Name, selectedGame.SourceURL)
+
+	// Show progress dialog
+	progress := dialog.NewProgress("Searching", "Searching for game links...", mw.window)
+	progress.Show()
+
+	go func() {
+		defer progress.Hide()
+
+		fmt.Printf("DEBUG: Starting search for game: %s\n", selectedGame.Name)
+
+		// Search for the game
+		results, err := mw.searchService.SearchGame(selectedGame.Name)
+		if err != nil {
+			fmt.Printf("DEBUG: Search error: %v\n", err)
+			dialog.ShowError(fmt.Errorf("search failed: %w", err), mw.window)
+			return
+		}
+
+		fmt.Printf("DEBUG: Found %d search results\n", len(results))
+		for i, result := range results {
+			fmt.Printf("DEBUG: Result %d: %s (score: %.2f)\n", i+1, result.Title, result.MatchScore)
+		}
+
+		if len(results) == 0 {
+			fmt.Printf("DEBUG: No results found\n")
+			dialog.ShowInformation("No Results",
+				fmt.Sprintf("No matches found for '%s' on F95Zone.", selectedGame.Name), mw.window)
+			return
+		}
+
+		// Find the best match
+		bestMatch := results[0]
+		for _, result := range results {
+			if result.MatchScore > bestMatch.MatchScore {
+				bestMatch = result
+			}
+		}
+
+		fmt.Printf("DEBUG: Best match: %s (score: %.2f)\n", bestMatch.Title, bestMatch.MatchScore)
+
+		// Directly update the game's source URL with the best match
+		fmt.Printf("DEBUG: Updating game SourceURL from '%s' to '%s'\n", selectedGame.SourceURL, bestMatch.Link)
+		selectedGame.SourceURL = bestMatch.Link
+
+		// Save the changes
+		fmt.Printf("DEBUG: Saving games to storage\n")
+		mw.saveGames()
+		fmt.Printf("DEBUG: Refreshing game list\n")
+		mw.gameList.Refresh()
+
+		fmt.Printf("DEBUG: Showing confirmation dialog\n")
+		dialog.ShowInformation("Link Updated",
+			fmt.Sprintf("Source URL updated for '%s' to:\n%s", selectedGame.Name, bestMatch.Link), mw.window)
+	}()
 }
