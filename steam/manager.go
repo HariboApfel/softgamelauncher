@@ -165,13 +165,17 @@ func (m *Manager) cleanupDuplicatesInFile(shortcutsPath string) error {
 			// First time seeing this game
 			// Ensure it uses the correct AppID format
 			correctAppID := m.generateAppID(shortcut.AppName, shortcut.Exe)
-			if shortcut.AppID != correctAppID {
-				// Create a copy with the correct AppID
+
+			// Format paths for platform compatibility
+			formattedExe, formattedStartDir := m.formatPathsForPlatform(shortcut.Exe, shortcut.StartDir)
+
+			if shortcut.AppID != correctAppID || shortcut.Exe != formattedExe || shortcut.StartDir != formattedStartDir {
+				// Create a copy with the correct AppID and formatted paths
 				correctedShortcut := &SteamShortcut{
 					AppID:               correctAppID,
 					AppName:             shortcut.AppName,
-					Exe:                 shortcut.Exe,
-					StartDir:            shortcut.StartDir,
+					Exe:                 formattedExe,      // Use formatted executable path
+					StartDir:            formattedStartDir, // Use formatted start directory
 					Icon:                shortcut.Icon,
 					ShortcutPath:        shortcut.ShortcutPath,
 					LaunchOptions:       shortcut.LaunchOptions,
@@ -329,7 +333,44 @@ func (m *Manager) findUserDataPath(steamPath string) (string, error) {
 	return latestUserDir, nil
 }
 
-// createShortcutFromGame creates a Steam shortcut from a game model
+// formatPathsForPlatform formats executable and start directory paths according to platform requirements
+func (m *Manager) formatPathsForPlatform(exe, startDir string) (string, string) {
+	// On Linux/Unix systems, Steam requires specific formatting
+	if runtime.GOOS != "windows" {
+		// Quote executable path if it contains spaces or special characters
+		if strings.Contains(exe, " ") || m.needsQuoting(exe) {
+			exe = fmt.Sprintf(`"%s"`, exe)
+		}
+
+		// Ensure start directory has trailing slash on Linux
+		if !strings.HasSuffix(startDir, "/") {
+			startDir = startDir + "/"
+		}
+	}
+
+	return exe, startDir
+}
+
+// needsQuoting checks if a path needs to be quoted for Steam on Linux
+func (m *Manager) needsQuoting(path string) bool {
+	// Check for characters that require quoting in Steam shortcuts on Linux
+	specialChars := []string{" ", "(", ")", "[", "]", "{", "}", "&", "|", ";", "<", ">", "?", "*", "'", "`", "\"", "\\"}
+
+	for _, char := range specialChars {
+		if strings.Contains(path, char) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// CreateShortcutFromGame creates a Steam shortcut from a game model (public for testing)
+func (m *Manager) CreateShortcutFromGame(game *models.Game) *SteamShortcut {
+	return m.createShortcutFromGame(game)
+}
+
+// createShortcutFromGame creates a Steam shortcut from a game model (internal)
 func (m *Manager) createShortcutFromGame(game *models.Game) *SteamShortcut {
 	// Generate AppID
 	appID := m.generateAppID(game.Name, game.Executable)
@@ -340,6 +381,9 @@ func (m *Manager) createShortcutFromGame(game *models.Game) *SteamShortcut {
 		startDir = filepath.Dir(game.Executable)
 	}
 
+	// Format executable path and start directory according to platform requirements
+	exe, startDir := m.formatPathsForPlatform(game.Executable, startDir)
+
 	// Use game image as icon if available
 	icon := game.IconPath
 	if icon == "" && game.ImagePath != "" {
@@ -349,8 +393,8 @@ func (m *Manager) createShortcutFromGame(game *models.Game) *SteamShortcut {
 	return &SteamShortcut{
 		AppID:               appID,
 		AppName:             game.Name,
-		Exe:                 game.Executable,
-		StartDir:            startDir,
+		Exe:                 exe,      // Use formatted executable path
+		StartDir:            startDir, // Use formatted start directory
 		Icon:                icon,
 		ShortcutPath:        "",
 		LaunchOptions:       "",
