@@ -166,8 +166,11 @@ func (m *Manager) cleanupDuplicatesInFile(shortcutsPath string) error {
 			// Ensure it uses the correct AppID format
 			correctAppID := m.generateAppID(shortcut.AppName, shortcut.Exe)
 
+			// Ensure StartDir is set to the executable's parent directory
+			correctStartDir := filepath.Dir(shortcut.Exe)
+
 			// Format paths for platform compatibility
-			formattedExe, formattedStartDir := m.formatPathsForPlatform(shortcut.Exe, shortcut.StartDir)
+			formattedExe, formattedStartDir := m.formatPathsForPlatform(shortcut.Exe, correctStartDir)
 
 			if shortcut.AppID != correctAppID || shortcut.Exe != formattedExe || shortcut.StartDir != formattedStartDir {
 				// Create a copy with the correct AppID and formatted paths
@@ -175,7 +178,7 @@ func (m *Manager) cleanupDuplicatesInFile(shortcutsPath string) error {
 					AppID:               correctAppID,
 					AppName:             shortcut.AppName,
 					Exe:                 formattedExe,      // Use formatted executable path
-					StartDir:            formattedStartDir, // Use formatted start directory
+					StartDir:            formattedStartDir, // Use executable's parent directory
 					Icon:                shortcut.Icon,
 					ShortcutPath:        shortcut.ShortcutPath,
 					LaunchOptions:       shortcut.LaunchOptions,
@@ -375,11 +378,9 @@ func (m *Manager) createShortcutFromGame(game *models.Game) *SteamShortcut {
 	// Generate AppID
 	appID := m.generateAppID(game.Name, game.Executable)
 
-	// Determine start directory
-	startDir := game.Folder
-	if startDir == "" {
-		startDir = filepath.Dir(game.Executable)
-	}
+	// Always use the executable's parent directory as StartDir
+	// This ensures Steam starts the game from the correct directory
+	startDir := filepath.Dir(game.Executable)
 
 	// Format executable path and start directory according to platform requirements
 	exe, startDir := m.formatPathsForPlatform(game.Executable, startDir)
@@ -394,7 +395,7 @@ func (m *Manager) createShortcutFromGame(game *models.Game) *SteamShortcut {
 		AppID:               appID,
 		AppName:             game.Name,
 		Exe:                 exe,      // Use formatted executable path
-		StartDir:            startDir, // Use formatted start directory
+		StartDir:            startDir, // Use executable's parent directory
 		Icon:                icon,
 		ShortcutPath:        "",
 		LaunchOptions:       "",
