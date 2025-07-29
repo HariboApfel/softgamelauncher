@@ -727,21 +727,21 @@ func (m *Manager) readNullTerminatedString(reader *bytes.Reader) (string, error)
 // assignStringField assigns a string value to the appropriate shortcut field
 func (m *Manager) assignStringField(shortcut *SteamShortcut, fieldName, value string) {
 	switch fieldName {
-	case "appname":
+	case "appname", "AppName": // Handle both cases Steam might use
 		shortcut.AppName = value
-	case "exe":
+	case "exe", "Exe": // Handle both cases Steam might use
 		shortcut.Exe = value
-	case "StartDir":
+	case "StartDir": // Steam uses this exact casing
 		shortcut.StartDir = value
-	case "icon":
+	case "icon", "Icon": // Handle both cases
 		shortcut.Icon = value
-	case "ShortcutPath":
+	case "ShortcutPath": // Steam uses this exact casing
 		shortcut.ShortcutPath = value
-	case "LaunchOptions":
+	case "LaunchOptions": // Steam uses this exact casing
 		shortcut.LaunchOptions = value
-	case "DevkitGameID":
+	case "DevkitGameID": // Steam uses this exact casing
 		shortcut.DevkitGameID = value
-	case "FlatpakAppID":
+	case "FlatpakAppID": // Steam uses this exact casing
 		shortcut.FlatpakAppID = value
 	default:
 		// Preserve unknown string fields to prevent corruption
@@ -755,21 +755,21 @@ func (m *Manager) assignStringField(shortcut *SteamShortcut, fieldName, value st
 // assignIntField assigns an integer value to the appropriate shortcut field
 func (m *Manager) assignIntField(shortcut *SteamShortcut, fieldName string, value uint32) {
 	switch fieldName {
-	case "appid":
+	case "appid", "AppID": // Handle both cases Steam might use
 		shortcut.AppID = value
-	case "IsHidden":
+	case "IsHidden": // Steam uses this exact casing
 		shortcut.IsHidden = value != 0
-	case "AllowDesktopConfig":
+	case "AllowDesktopConfig": // Steam uses this exact casing
 		shortcut.AllowDesktopConfig = value != 0
-	case "AllowOverlay":
+	case "AllowOverlay": // Steam uses this exact casing
 		shortcut.AllowOverlay = value != 0
-	case "OpenVR":
+	case "OpenVR": // Steam uses this exact casing
 		shortcut.OpenVR = value != 0
-	case "Devkit":
+	case "Devkit": // Steam uses this exact casing
 		shortcut.Devkit = value != 0
-	case "DevkitOverrideAppID":
+	case "DevkitOverrideAppID": // Steam uses this exact casing
 		shortcut.DevkitOverrideAppID = value
-	case "LastPlayTime":
+	case "LastPlayTime": // Steam uses this exact casing
 		shortcut.LastPlayTime = value
 	default:
 		// Preserve unknown integer fields to prevent corruption
@@ -818,9 +818,9 @@ func (m *Manager) writeShortcutData(buffer *bytes.Buffer, shortcut *SteamShortcu
 	buffer.WriteByte(0x00)
 	binary.Write(buffer, binary.LittleEndian, shortcut.AppID)
 
-	// Write string fields - ALWAYS write all fields to preserve existing data
-	m.writeStringField(buffer, "appname", shortcut.AppName)
-	m.writeStringField(buffer, "exe", shortcut.Exe)
+	// Write string fields using Steam's expected casing
+	m.writeStringField(buffer, "AppName", shortcut.AppName) // Use Steam's casing
+	m.writeStringField(buffer, "Exe", shortcut.Exe)         // Use Steam's casing
 	m.writeStringField(buffer, "StartDir", shortcut.StartDir)
 	m.writeStringField(buffer, "icon", shortcut.Icon)
 	m.writeStringField(buffer, "ShortcutPath", shortcut.ShortcutPath)
