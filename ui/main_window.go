@@ -10,6 +10,7 @@ import (
 	"gamelauncher/storage"
 	"image/color"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	fynestorage "fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	"github.com/ncruces/zenity"
 )
 
 // MainWindow represents the main application window
@@ -324,6 +326,147 @@ func (mw *MainWindow) saveLastUsedPath(path string) {
 	}
 }
 
+// openNativeFileDialog opens the system's native file dialog
+// Priority order: 1) Dolphin/kdialog (KDE), 2) Zenity (GTK), 3) Fyne (fallback)
+func (mw *MainWindow) openNativeFileDialog() (string, error) {
+	startPath := mw.getLastUsedPath()
+	
+	// Try Dolphin first (KDE file manager)
+	if mw.isDolphinAvailable() {
+		if filename, err := mw.openDolphinFileDialog(startPath); err == nil {
+			if filename != "" {
+				mw.saveLastUsedPath(filename)
+			}
+			return filename, nil
+		}
+		// If Dolphin fails, continue to other options
+	}
+	
+	// Check if zenity is available as second option
+	if zenity.IsAvailable() {
+		filename, err := zenity.SelectFile(
+			zenity.Title("Select Executable"),
+			zenity.Filename(startPath),
+			zenity.FileFilters{
+				{"Executable files", []string{"*.exe", "*.sh", "*.run", "*.AppImage"}, false},
+				{"All files", []string{"*"}, false},
+			},
+		)
+		
+		if err != nil {
+			// Check if user cancelled
+			if err == zenity.ErrCanceled {
+				return "", nil
+			}
+			// On error, fallback to Fyne dialog
+			return mw.openFyneFileDialog(startPath)
+		}
+		
+		// Save the directory for future use
+		if filename != "" {
+			mw.saveLastUsedPath(filename)
+		}
+		
+		return filename, nil
+	}
+	
+	// Fallback to Fyne file dialog if neither Dolphin nor zenity is available
+	return mw.openFyneFileDialog(startPath)
+}
+
+// openFyneFileDialog is a fallback that uses the Fyne file dialog
+func (mw *MainWindow) openFyneFileDialog(startPath string) (string, error) {
+	// Create a channel to receive the result
+	resultChan := make(chan string, 1)
+	errorChan := make(chan error, 1)
+	
+	fileDialog := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
+		if err != nil {
+			errorChan <- err
+			return
+		}
+		if reader == nil {
+			resultChan <- "" // User cancelled
+			return
+		}
+		defer reader.Close()
+		selectedPath := reader.URI().Path()
+		resultChan <- selectedPath
+	}, mw.window)
+	
+	// Set the starting location to the last used path
+	if startPath != "" {
+		if listableURI := fynestorage.NewFileURI(startPath); listableURI != nil {
+			if listable, ok := listableURI.(fyne.ListableURI); ok {
+				fileDialog.SetLocation(listable)
+			}
+		}
+	}
+	
+	fileDialog.Show()
+	
+	// Wait for result
+	select {
+	case filename := <-resultChan:
+		if filename != "" {
+			mw.saveLastUsedPath(filename)
+		}
+		return filename, nil
+	case err := <-errorChan:
+		return "", err
+	}
+}
+
+// isDolphinAvailable checks if Dolphin file manager is available
+func (mw *MainWindow) isDolphinAvailable() bool {
+	// Check if kdialog is available, which is the actual dialog tool we'll use
+	// kdialog comes with KDE/Dolphin installations
+	_, err := exec.LookPath("kdialog")
+	if err != nil {
+		return false
+	}
+	
+	// Optionally also check for dolphin itself
+	_, err = exec.LookPath("dolphin")
+	return err == nil
+}
+
+// openDolphinFileDialog opens a file dialog using Dolphin
+func (mw *MainWindow) openDolphinFileDialog(startPath string) (string, error) {
+	// Dolphin command for file selection: dolphin --select <path>
+	// However, for file picking, we'll use a different approach
+	// Since Dolphin doesn't have a direct file picker mode, we'll use kdialog instead
+	// which is the KDE dialog utility that Dolphin/KDE uses
+	
+	// Check if kdialog is available (comes with KDE/Dolphin)
+	if _, err := exec.LookPath("kdialog"); err != nil {
+		return "", err
+	}
+	
+	// Build kdialog command for file selection
+	args := []string{
+		"--getopenfilename",
+		startPath,
+		"*.exe *.sh *.run *.AppImage *", // Common executable file filters
+		"--title", "Select Executable",
+	}
+	
+	cmd := exec.Command("kdialog", args...)
+	output, err := cmd.Output()
+	
+	if err != nil {
+		// Check if this is due to user cancellation
+		if exitError, ok := err.(*exec.ExitError); ok && exitError.ExitCode() == 1 {
+			// Exit code 1 typically means user cancelled
+			return "", nil
+		}
+		return "", err
+	}
+	
+	filename := strings.TrimSpace(string(output))
+	return filename, nil
+}
+
 // importGames shows a dialog to import games from a folder
 func (mw *MainWindow) importGames() {
 	// Create a file dialog that starts at the last used path
@@ -407,30 +550,14 @@ func (mw *MainWindow) addGame() {
 
 	// Create browse button
 	browseBtn := widget.NewButton("Browse", func() {
-		fileDialog := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-			if err != nil || reader == nil {
-				if err != nil {
-					dialog.ShowError(err, mw.window)
-				}
-				return
-			}
-			defer reader.Close()
-			selectedPath := reader.URI().Path()
-			execEntry.SetText(selectedPath)
-			// Save the directory for future use
-			mw.saveLastUsedPath(selectedPath)
-		}, mw.window)
-		
-		// Set the starting location to the last used path
-		if startLocation := mw.getLastUsedPath(); startLocation != "" {
-			if listableURI := fynestorage.NewFileURI(startLocation); listableURI != nil {
-				if listable, ok := listableURI.(fyne.ListableURI); ok {
-					fileDialog.SetLocation(listable)
-				}
-			}
+		selectedPath, err := mw.openNativeFileDialog()
+		if err != nil {
+			dialog.ShowError(err, mw.window)
+			return
 		}
-		
-		fileDialog.Show()
+		if selectedPath != "" {
+			execEntry.SetText(selectedPath)
+		}
 	})
 
 	// Create executable selection container
@@ -679,30 +806,14 @@ func (mw *MainWindow) editGame(game *models.Game) {
 
 	// Create browse button for edit dialog
 	browseBtn := widget.NewButton("Browse", func() {
-		fileDialog := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-			if err != nil || reader == nil {
-				if err != nil {
-					dialog.ShowError(err, mw.window)
-				}
-				return
-			}
-			defer reader.Close()
-			selectedPath := reader.URI().Path()
-			execEntry.SetText(selectedPath)
-			// Save the directory for future use
-			mw.saveLastUsedPath(selectedPath)
-		}, mw.window)
-		
-		// Set the starting location to the last used path
-		if startLocation := mw.getLastUsedPath(); startLocation != "" {
-			if listableURI := fynestorage.NewFileURI(startLocation); listableURI != nil {
-				if listable, ok := listableURI.(fyne.ListableURI); ok {
-					fileDialog.SetLocation(listable)
-				}
-			}
+		selectedPath, err := mw.openNativeFileDialog()
+		if err != nil {
+			dialog.ShowError(err, mw.window)
+			return
 		}
-		
-		fileDialog.Show()
+		if selectedPath != "" {
+			execEntry.SetText(selectedPath)
+		}
 	})
 
 	// Create executable selection container
