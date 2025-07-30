@@ -10,6 +10,7 @@ import (
 	"gamelauncher/storage"
 	"image/color"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -326,36 +327,51 @@ func (mw *MainWindow) saveLastUsedPath(path string) {
 }
 
 // openNativeFileDialog opens the system's native file dialog
+// Priority order: 1) Dolphin/kdialog (KDE), 2) Zenity (GTK), 3) Fyne (fallback)
 func (mw *MainWindow) openNativeFileDialog() (string, error) {
 	startPath := mw.getLastUsedPath()
 	
-	// Check if zenity is available first
-	if !zenity.IsAvailable() {
-		// Fallback to Fyne file dialog if zenity is not available
-		return mw.openFyneFileDialog(startPath)
-	}
-	
-	// Use zenity for native file dialog
-	filename, err := zenity.SelectFile(
-		zenity.Title("Select Executable"),
-		zenity.Filename(startPath),
-	)
-	
-	if err != nil {
-		// Check if user cancelled
-		if err == zenity.ErrCanceled {
-			return "", nil
+	// Try Dolphin first (KDE file manager)
+	if mw.isDolphinAvailable() {
+		if filename, err := mw.openDolphinFileDialog(startPath); err == nil {
+			if filename != "" {
+				mw.saveLastUsedPath(filename)
+			}
+			return filename, nil
 		}
-		// On error, fallback to Fyne dialog
-		return mw.openFyneFileDialog(startPath)
+		// If Dolphin fails, continue to other options
 	}
 	
-	// Save the directory for future use
-	if filename != "" {
-		mw.saveLastUsedPath(filename)
+	// Check if zenity is available as second option
+	if zenity.IsAvailable() {
+		filename, err := zenity.SelectFile(
+			zenity.Title("Select Executable"),
+			zenity.Filename(startPath),
+			zenity.FileFilters{
+				{"Executable files", []string{"*.exe", "*.sh", "*.run", "*.AppImage"}, false},
+				{"All files", []string{"*"}, false},
+			},
+		)
+		
+		if err != nil {
+			// Check if user cancelled
+			if err == zenity.ErrCanceled {
+				return "", nil
+			}
+			// On error, fallback to Fyne dialog
+			return mw.openFyneFileDialog(startPath)
+		}
+		
+		// Save the directory for future use
+		if filename != "" {
+			mw.saveLastUsedPath(filename)
+		}
+		
+		return filename, nil
 	}
 	
-	return filename, nil
+	// Fallback to Fyne file dialog if neither Dolphin nor zenity is available
+	return mw.openFyneFileDialog(startPath)
 }
 
 // openFyneFileDialog is a fallback that uses the Fyne file dialog
@@ -399,6 +415,56 @@ func (mw *MainWindow) openFyneFileDialog(startPath string) (string, error) {
 	case err := <-errorChan:
 		return "", err
 	}
+}
+
+// isDolphinAvailable checks if Dolphin file manager is available
+func (mw *MainWindow) isDolphinAvailable() bool {
+	// Check if kdialog is available, which is the actual dialog tool we'll use
+	// kdialog comes with KDE/Dolphin installations
+	_, err := exec.LookPath("kdialog")
+	if err != nil {
+		return false
+	}
+	
+	// Optionally also check for dolphin itself
+	_, err = exec.LookPath("dolphin")
+	return err == nil
+}
+
+// openDolphinFileDialog opens a file dialog using Dolphin
+func (mw *MainWindow) openDolphinFileDialog(startPath string) (string, error) {
+	// Dolphin command for file selection: dolphin --select <path>
+	// However, for file picking, we'll use a different approach
+	// Since Dolphin doesn't have a direct file picker mode, we'll use kdialog instead
+	// which is the KDE dialog utility that Dolphin/KDE uses
+	
+	// Check if kdialog is available (comes with KDE/Dolphin)
+	if _, err := exec.LookPath("kdialog"); err != nil {
+		return "", err
+	}
+	
+	// Build kdialog command for file selection
+	args := []string{
+		"--getopenfilename",
+		startPath,
+		"*.exe *.sh *.run *.AppImage *", // Common executable file filters
+		"--title", "Select Executable",
+	}
+	
+	cmd := exec.Command("kdialog", args...)
+	output, err := cmd.Output()
+	
+	if err != nil {
+		// Check if this is due to user cancellation
+		if exitError, ok := err.(*exec.ExitError); ok && exitError.ExitCode() == 1 {
+			// Exit code 1 typically means user cancelled
+			return "", nil
+		}
+		return "", err
+	}
+	
+	filename := strings.TrimSpace(string(output))
+	return filename, nil
 }
 
 // importGames shows a dialog to import games from a folder
