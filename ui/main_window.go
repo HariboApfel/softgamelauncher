@@ -26,6 +26,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/ncruces/zenity"
+	"runtime"
 )
 
 // MainWindow represents the main application window
@@ -125,9 +126,9 @@ func (mw *MainWindow) setupUI() {
 			fetchedVersionLabel := NewColoredLabel("Fetched Version", color.White, color.Black)
 			fetchedVersionContainer := container.NewHBox(fetchedVersionLabel)
 
-			// Source URL column - compact
-			sourceURLLabel := widget.NewLabel("Source URL")
-			sourceURLContainer := container.NewHBox(sourceURLLabel)
+			// Source URL column - compact  
+			sourceURLHyperlink := widget.NewHyperlink("Source URL", nil)
+			sourceURLContainer := container.NewHBox(sourceURLHyperlink)
 
 			// Launch button column - compact
 			launchBtn := widget.NewButton("Launch", nil)
@@ -221,8 +222,18 @@ func (mw *MainWindow) setupUI() {
 						// Update source URL (third element)
 						if sourceURLContainer, ok := rightContainer.Objects[2].(*fyne.Container); ok {
 							if len(sourceURLContainer.Objects) > 0 {
-								if sourceURLLabel, ok := sourceURLContainer.Objects[0].(*widget.Label); ok {
-									sourceURLLabel.SetText(mw.truncateText(game.SourceURL, 20))
+								if sourceURLHyperlink, ok := sourceURLContainer.Objects[0].(*widget.Hyperlink); ok {
+									if game.SourceURL != "" {
+										sourceURLHyperlink.SetText(mw.truncateText(game.SourceURL, 20))
+										sourceURLHyperlink.OnTapped = func() {
+											if err := openURLInBrowser(game.SourceURL); err != nil {
+												dialog.ShowError(fmt.Errorf("Failed to open URL: %v", err), mw.window)
+											}
+										}
+									} else {
+										sourceURLHyperlink.SetText("No URL")
+										sourceURLHyperlink.OnTapped = nil
+									}
 								}
 							}
 						}
@@ -853,6 +864,9 @@ func (mw *MainWindow) editGame(game *models.Game) {
 				return
 			}
 
+			// Store original source URL to detect changes
+			originalSourceURL := game.SourceURL
+
 			game.Name = nameEntry.Text
 			game.Executable = execEntry.Text
 			game.SourceURL = urlEntry.Text
@@ -860,6 +874,27 @@ func (mw *MainWindow) editGame(game *models.Game) {
 			game.VersionSelector = versionSelectorEntry.Text
 			game.VersionPattern = versionPatternEntry.Text
 			game.CurrentVersion = currentVersionEntry.Text
+
+			// If source URL changed, re-download image from the new source
+			if originalSourceURL != game.SourceURL && game.SourceURL != "" {
+				go func() {
+					fmt.Printf("DEBUG: Source URL changed for %s, re-downloading image from: %s\n", game.Name, game.SourceURL)
+					
+					// Try to extract image directly from source URL
+					imagePath, err := mw.searchService.ExtractImageFromSourceURL(game.SourceURL)
+					if err != nil {
+						fmt.Printf("DEBUG: Failed to extract image from source URL: %v\n", err)
+						// Fallback to search-based image download
+						mw.redownloadImageForGame(game)
+					} else {
+						// Update game with new image path
+						game.ImagePath = imagePath
+						mw.saveGames()
+						mw.gameList.Refresh()
+						fmt.Printf("DEBUG: Successfully downloaded image from source URL: %s\n", imagePath)
+					}
+				}()
+			}
 
 			mw.saveGames()
 			mw.gameList.Refresh()
@@ -1322,7 +1357,21 @@ func (mw *MainWindow) fetchImagesForAllGames() {
 				continue
 			}
 
-			// Search for the game to get image URL
+			// First, try to extract image directly from source URL if available
+			if game.SourceURL != "" {
+				fmt.Printf("DEBUG: Attempting to extract image from source URL for %s: %s\n", game.Name, game.SourceURL)
+				imagePath, err := mw.searchService.ExtractImageFromSourceURL(game.SourceURL)
+				if err == nil && imagePath != "" {
+					game.ImagePath = imagePath
+					downloadedCount++
+					fmt.Printf("DEBUG: Successfully extracted image from source URL for %s: %s\n", game.Name, imagePath)
+					continue
+				} else {
+					fmt.Printf("DEBUG: Failed to extract image from source URL for %s: %v\n", game.Name, err)
+				}
+			}
+
+			// Fallback to search-based image download
 			fmt.Printf("DEBUG: Searching for %s...\n", game.Name)
 			results, err := mw.searchService.SearchGame(game.Name)
 			if err != nil {
@@ -1363,6 +1412,7 @@ func (mw *MainWindow) fetchImagesForAllGames() {
 				}
 			} else {
 				fmt.Printf("DEBUG: No search results found for %s\n", game.Name)
+				failedCount++
 			}
 		}
 
@@ -1378,7 +1428,22 @@ func (mw *MainWindow) fetchImagesForAllGames() {
 
 // redownloadImageForGame attempts to re-download the image for a game
 func (mw *MainWindow) redownloadImageForGame(game *models.Game) {
-	// Search for the game to get image URL
+	// First, try to extract image directly from source URL if available
+	if game.SourceURL != "" {
+		fmt.Printf("DEBUG: Attempting to extract image from source URL for %s: %s\n", game.Name, game.SourceURL)
+		imagePath, err := mw.searchService.ExtractImageFromSourceURL(game.SourceURL)
+		if err == nil && imagePath != "" {
+			game.ImagePath = imagePath
+			mw.saveGames()
+			mw.gameList.Refresh()
+			fmt.Printf("DEBUG: Successfully extracted image from source URL for %s: %s\n", game.Name, imagePath)
+			return
+		} else {
+			fmt.Printf("DEBUG: Failed to extract image from source URL for %s: %v\n", game.Name, err)
+		}
+	}
+
+	// Fallback to search-based image download
 	results, err := mw.searchService.SearchGame(game.Name)
 	if err != nil {
 		fmt.Printf("DEBUG: Failed to search for %s: %v\n", game.Name, err)
@@ -1511,4 +1576,25 @@ func (mw *MainWindow) addSelectedGameToSteam() {
 				dialog.ShowInformation(fmt.Sprintf("%sd to Steam", strings.Title(actionText)), successMessage, mw.window)
 			}()
 		}, mw.window)
+}
+
+// openURLInBrowser opens a URL in the default browser
+func openURLInBrowser(url string) error {
+	if url == "" {
+		return fmt.Errorf("URL is empty")
+	}
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+	}
+
+	return cmd.Start()
 }

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	_ "golang.org/x/image/webp"
+	"github.com/PuerkitoBio/goquery"
 )
 
 // F95ZoneRSS represents the RSS feed structure from F95Zone
@@ -454,6 +455,157 @@ func (s *Service) ExtractImageURL(description string) string {
 	if len(matches) > 1 {
 		return matches[1]
 	}
+	return ""
+}
+
+// ExtractImageFromSourceURL scrapes a webpage to find and download images
+func (s *Service) ExtractImageFromSourceURL(sourceURL string) (string, error) {
+	if sourceURL == "" {
+		return "", fmt.Errorf("source URL is empty")
+	}
+
+	// Create HTTP request with proper headers
+	req, err := http.NewRequest("GET", sourceURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Add headers to mimic a browser request
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch webpage: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("webpage returned status %d", resp.StatusCode)
+	}
+
+	// Parse the HTML document
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse HTML: %w", err)
+	}
+
+	// Find the best image from the page
+	imageURL := s.findBestImageFromPage(doc, sourceURL)
+	if imageURL == "" {
+		return "", fmt.Errorf("no suitable image found on page")
+	}
+
+	// Convert relative URLs to absolute URLs
+	baseURL, err := url.Parse(sourceURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse source URL: %w", err)
+	}
+
+	imgURL, err := url.Parse(imageURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse image URL: %w", err)
+	}
+
+	// Resolve relative URLs
+	absoluteImageURL := baseURL.ResolveReference(imgURL).String()
+
+	// Download the image
+	imagePath, err := s.downloadImage(absoluteImageURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to download image from %s: %w", absoluteImageURL, err)
+	}
+
+	return imagePath, nil
+}
+
+// findBestImageFromPage finds the most suitable image for a game from a webpage
+func (s *Service) findBestImageFromPage(doc *goquery.Document, sourceURL string) string {
+	// Priority selectors for different types of sites
+	var selectors []string
+
+	if strings.Contains(sourceURL, "f95zone.to") {
+		// F95Zone specific selectors
+		selectors = []string{
+			"img.bbImage", // Forum images
+			".message-content img", // Message content images
+			"#message-1 img", // First message images
+			".js-messageContent img", // Modern F95Zone message content
+			"img[data-url]", // F95Zone click-to-expand images
+		}
+	} else {
+		// Generic selectors for other sites
+		selectors = []string{
+			"img[alt*='preview']", "img[alt*='Preview']",
+			"img[alt*='cover']", "img[alt*='Cover']",
+			"img[alt*='game']", "img[alt*='Game']",
+			"img[class*='cover']", "img[class*='preview']",
+			"img[class*='thumbnail']", "img[class*='hero']",
+			".preview img", ".cover img", ".thumbnail img",
+			"img", // Fallback to any image
+		}
+	}
+
+	// Try each selector in priority order
+	for _, selector := range selectors {
+		var bestImageURL string
+		largestSize := 0
+
+		doc.Find(selector).Each(func(i int, s *goquery.Selection) {
+			// Get image URL from src or data-url attribute
+			imgURL, exists := s.Attr("src")
+			if !exists {
+				// Try data-url for F95Zone click-to-expand images
+				imgURL, exists = s.Attr("data-url")
+			}
+			if !exists {
+				return
+			}
+
+			// Skip small icons, avatars, and common unwanted images
+			if s.HasClass("avatar") || s.HasClass("icon") ||
+				strings.Contains(imgURL, "avatar") || strings.Contains(imgURL, "icon") ||
+				strings.Contains(imgURL, "emoji") || strings.Contains(imgURL, "smilie") {
+				return
+			}
+
+			// Try to get image dimensions
+			width := 0
+			height := 0
+			if w, exists := s.Attr("width"); exists {
+				fmt.Sscanf(w, "%d", &width)
+			}
+			if h, exists := s.Attr("height"); exists {
+				fmt.Sscanf(h, "%d", &height)
+			}
+
+			// Calculate image size (use area as a rough measure)
+			size := width * height
+
+			// If no dimensions available, prioritize by position (first images are often better)
+			if size == 0 {
+				size = 1000 - i // Give preference to earlier images
+			}
+
+			// Skip very small images (likely icons)
+			if (width > 0 && width < 50) || (height > 0 && height < 50) {
+				return
+			}
+
+			// Update best image if this one is larger
+			if size > largestSize {
+				largestSize = size
+				bestImageURL = imgURL
+			}
+		})
+
+		// Return the first good image we find
+		if bestImageURL != "" {
+			return bestImageURL
+		}
+	}
+
 	return ""
 }
 
