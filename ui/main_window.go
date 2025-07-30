@@ -303,8 +303,12 @@ func (mw *MainWindow) createToolbar() *widget.Toolbar {
 		widget.NewToolbarAction(theme.DownloadIcon(), func() {
 			mw.fetchImagesForAllGames()
 		}),
+		widget.NewToolbarSeparator(),
 		widget.NewToolbarAction(theme.ComputerIcon(), func() {
 			mw.addSelectedGameToSteam()
+		}),
+		widget.NewToolbarAction(theme.ListIcon(), func() {
+			mw.addAllGamesToSteam()
 		}),
 		widget.NewToolbarSeparator(),
 		widget.NewToolbarAction(theme.SettingsIcon(), func() {
@@ -1498,8 +1502,6 @@ func (mw *MainWindow) redownloadImageForGame(game *models.Game) {
 	}
 }
 
-
-
 // addSelectedGameToSteam adds the currently selected game to Steam as a non-Steam shortcut
 func (mw *MainWindow) addSelectedGameToSteam() {
 	mw.gamesMutex.RLock()
@@ -1568,6 +1570,53 @@ func (mw *MainWindow) addSelectedGameToSteam() {
 					appID, steamURL)
 
 				dialog.ShowInformation(fmt.Sprintf("%sd to Steam", strings.Title(actionText)), successMessage, mw.window)
+			}()
+		}, mw.window)
+}
+
+// addAllGamesToSteam adds all games to Steam as non-Steam shortcuts
+func (mw *MainWindow) addAllGamesToSteam() {
+	mw.gamesMutex.RLock()
+	gameCount := len(mw.games)
+	if gameCount == 0 {
+		mw.gamesMutex.RUnlock()
+		dialog.ShowInformation("No Games",
+			"There are no games to add to Steam.", mw.window)
+		return
+	}
+
+	// Create a copy of the games slice
+	gamesCopy := make([]*models.Game, len(mw.games))
+	copy(gamesCopy, mw.games)
+	mw.gamesMutex.RUnlock()
+
+	// Show confirmation dialog
+	message := fmt.Sprintf("Add/update all %d games to Steam as non-Steam shortcuts?\n\nExisting shortcuts will be updated with current game information.\n\nNote: Steam must be restarted to see changes.", gameCount)
+
+	dialog.ShowConfirm("Add All Games to Steam", message,
+		func(confirm bool) {
+			if !confirm {
+				return
+			}
+
+			// Show progress dialog
+			progress := dialog.NewProgress("Adding Games to Steam", "Processing games...", mw.window)
+			progress.Show()
+
+			go func() {
+				defer progress.Hide()
+
+				// Add all games to Steam
+				err := mw.steamManager.AddAllGamesToSteam(gamesCopy)
+				if err != nil {
+					dialog.ShowError(fmt.Errorf("failed to add games to Steam: %w", err), mw.window)
+					return
+				}
+
+				// Show success dialog
+				successMessage := fmt.Sprintf("Successfully processed all %d games for Steam!\n\nPlease restart Steam to see the changes in your library.\n\nNew games were added and existing shortcuts were updated with current information.", gameCount)
+
+				dialog.ShowInformation("Added to Steam", successMessage, mw.window)
 			}()
 		}, mw.window)
 }

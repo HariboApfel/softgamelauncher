@@ -27,6 +27,12 @@ func NewManager() *Manager {
 		dataPath = "."
 	}
 
+	// Ensure images subdirectory exists for image storage
+	imagesPath := filepath.Join(dataPath, "images")
+	if err := os.MkdirAll(imagesPath, 0755); err != nil {
+		fmt.Printf("Warning: Failed to create images directory: %v\n", err)
+	}
+
 	return &Manager{
 		dataPath: dataPath,
 	}

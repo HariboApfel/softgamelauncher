@@ -204,13 +204,17 @@ func (m *SourceMonitor) extractF95zoneVersion(doc *goquery.Document) string {
 			text := s.Text()
 
 			// Look for F95zone version patterns
-			// Pattern: "Version: X.X.X.X with RTP" or "Version: X.X.X.X"
+			// Pattern: "Version: X.X.X.X with RTP" or "Version: X.X.X.X" or "Version: X.X.X Steam" or "Version: X.X.X Final"
 			versionPatterns := []*regexp.Regexp{
-				regexp.MustCompile(`(?i)version[:\s]*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)`),
-				regexp.MustCompile(`(?i)version[:\s]*([0-9]+\.[0-9]+\.[0-9]+)`),
-				regexp.MustCompile(`(?i)version[:\s]*([0-9]+\.[0-9]+)`),
-				regexp.MustCompile(`(?i)v([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)`),
-				regexp.MustCompile(`(?i)v([0-9]+\.[0-9]+\.[0-9]+)`),
+				regexp.MustCompile(`(?i)version[:\s]*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)(?:\s+(?:with\s+rtp|steam|final))?`),
+				regexp.MustCompile(`(?i)version[:\s]*([0-9]+\.[0-9]+\.[0-9]+)(?:\s+(?:with\s+rtp|steam|final))?`),
+				regexp.MustCompile(`(?i)version[:\s]*([0-9]+\.[0-9]+)(?:\s+(?:with\s+rtp|steam|final))?`),
+				regexp.MustCompile(`(?i)v([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)(?:\s+(?:with\s+rtp|steam|final))?`),
+				regexp.MustCompile(`(?i)v([0-9]+\.[0-9]+\.[0-9]+)(?:\s+(?:with\s+rtp|steam|final))?`),
+				// Additional patterns for Steam/Final in version strings
+				regexp.MustCompile(`(?i)([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\s+(?:steam|final)`),
+				regexp.MustCompile(`(?i)([0-9]+\.[0-9]+\.[0-9]+)\s+(?:steam|final)`),
+				regexp.MustCompile(`(?i)([0-9]+\.[0-9]+)\s+(?:steam|final)`),
 			}
 
 			for _, pattern := range versionPatterns {
@@ -262,15 +266,21 @@ func (m *SourceMonitor) extractVersionFromPage(doc *goquery.Document) string {
 
 // isVersionString checks if a string looks like a version number
 func (m *SourceMonitor) isVersionString(s string) bool {
-	// Simple version pattern matching
+	// Simple version pattern matching including Steam/Final versions
 	versionPatterns := []string{
 		"v\\d+\\.\\d+",
 		"\\d+\\.\\d+\\.\\d+",
 		"version \\d+",
+		"\\d+\\.\\d+.*steam",
+		"\\d+\\.\\d+.*final",
+		"steam.*\\d+\\.\\d+",
+		"final.*\\d+\\.\\d+",
 	}
 
+	lowerS := strings.ToLower(s)
 	for _, pattern := range versionPatterns {
-		if strings.Contains(strings.ToLower(s), pattern) {
+		matched, _ := regexp.MatchString(pattern, lowerS)
+		if matched {
 			return true
 		}
 	}

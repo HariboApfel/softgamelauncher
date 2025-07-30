@@ -86,8 +86,6 @@ func (m *Manager) AddGameToSteam(game *models.Game) error {
 	return nil
 }
 
-
-
 // CheckGameExistsInSteam checks if a game already exists in Steam as a shortcut
 func (m *Manager) CheckGameExistsInSteam(game *models.Game) (bool, error) {
 	// Find Steam installation
@@ -832,6 +830,110 @@ func (m *Manager) GetShortcutURL(appID uint32) string {
 // GetSteamAppID returns the Steam AppID that would be generated for a game
 func (m *Manager) GetSteamAppID(game *models.Game) uint32 {
 	return m.generateAppID(game.Name, game.Executable)
+}
+
+// AddAllGamesToSteam adds all games in the list to Steam as non-Steam shortcuts
+func (m *Manager) AddAllGamesToSteam(games []*models.Game) error {
+	if len(games) == 0 {
+		return fmt.Errorf("no games to add")
+	}
+
+	// Find Steam installation and user data path once
+	steamPath, err := m.findSteamPath()
+	if err != nil {
+		return fmt.Errorf("failed to find Steam installation: %w", err)
+	}
+
+	userDataPath, err := m.findUserDataPath(steamPath)
+	if err != nil {
+		return fmt.Errorf("failed to find Steam user data: %w", err)
+	}
+
+	shortcutsPath := filepath.Join(userDataPath, "config", "shortcuts.vdf")
+
+	// Read existing shortcuts once
+	existingShortcuts, err := m.readShortcutsFile(shortcutsPath)
+	if err != nil {
+		// If file doesn't exist, create empty list
+		existingShortcuts = []*SteamShortcut{}
+	}
+
+	addedCount := 0
+	updatedCount := 0
+	errors := []string{}
+
+	// Process each game
+	for _, game := range games {
+		// Create shortcut from game
+		shortcut := m.createShortcutFromGame(game)
+
+		// Check if shortcut already exists
+		existingIndex := -1
+		normalizedName := m.normalizeName(shortcut.AppName)
+
+		for i, existing := range existingShortcuts {
+			// Primary check: same AppID
+			if existing.AppID == shortcut.AppID {
+				existingIndex = i
+				break
+			}
+
+			// Secondary check: same normalized name
+			existingNormalizedName := m.normalizeName(existing.AppName)
+			if existingNormalizedName == normalizedName {
+				existingIndex = i
+				break
+			}
+		}
+
+		if existingIndex >= 0 {
+			// Update existing shortcut
+			existingShortcut := existingShortcuts[existingIndex]
+			updatedShortcut := &SteamShortcut{
+				AppID:               shortcut.AppID,
+				AppName:             shortcut.AppName,
+				Exe:                 shortcut.Exe,
+				StartDir:            shortcut.StartDir,
+				Icon:                shortcut.Icon,
+				ShortcutPath:        existingShortcut.ShortcutPath,
+				LaunchOptions:       existingShortcut.LaunchOptions,
+				IsHidden:            existingShortcut.IsHidden,
+				AllowDesktopConfig:  existingShortcut.AllowDesktopConfig,
+				AllowOverlay:        existingShortcut.AllowOverlay,
+				OpenVR:              existingShortcut.OpenVR,
+				Devkit:              existingShortcut.Devkit,
+				DevkitGameID:        existingShortcut.DevkitGameID,
+				DevkitOverrideAppID: existingShortcut.DevkitOverrideAppID,
+				LastPlayTime:        existingShortcut.LastPlayTime,
+				FlatpakAppID:        existingShortcut.FlatpakAppID,
+				Tags:                existingShortcut.Tags,
+				UnknownStrings:      existingShortcut.UnknownStrings,
+				UnknownInts:         existingShortcut.UnknownInts,
+			}
+			existingShortcuts[existingIndex] = updatedShortcut
+			updatedCount++
+			log.Printf("Updated existing Steam shortcut: %s (AppID: %d)", updatedShortcut.AppName, updatedShortcut.AppID)
+		} else {
+			// Add new shortcut
+			existingShortcuts = append(existingShortcuts, shortcut)
+			addedCount++
+			log.Printf("Added new Steam shortcut: %s (AppID: %d)", shortcut.AppName, shortcut.AppID)
+		}
+	}
+
+	// Write all shortcuts back to file
+	err = m.writeShortcutsFile(shortcutsPath, existingShortcuts)
+	if err != nil {
+		return fmt.Errorf("failed to write shortcuts file: %w", err)
+	}
+
+	log.Printf("Bulk Steam operation completed: %d added, %d updated", addedCount, updatedCount)
+
+	if len(errors) > 0 {
+		return fmt.Errorf("completed with %d errors: %v", len(errors), errors)
+	}
+
+	return nil
 }
 
 // CheckSteamRunning checks if Steam is currently running
