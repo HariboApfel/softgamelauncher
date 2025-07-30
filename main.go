@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"gamelauncher/game"
+	_ "gamelauncher/plugins/f95zone"
 	"gamelauncher/search"
 	"gamelauncher/steam"
 	"gamelauncher/storage"
@@ -141,11 +142,11 @@ func listGames() {
 
 // searchForGame searches for a game on F95Zone and displays the results
 func searchForGame(gameName string) {
-	searchService := search.NewService()
+	searchManager := search.NewManager()
 
 	fmt.Printf("Searching for '%s' on F95Zone...\n", gameName)
 
-	results, err := searchService.SearchGame(gameName)
+	results, err := searchManager.SearchGame(gameName)
 	if err != nil {
 		fmt.Printf("Error searching for game: %v\n", err)
 		return
