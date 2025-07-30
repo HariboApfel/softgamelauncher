@@ -21,7 +21,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/storage"
+	fynestorage "fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -383,7 +383,7 @@ func (mw *MainWindow) importGames() {
 	
 	// Set the starting location to the last used path
 	if startLocation := mw.getLastUsedPath(); startLocation != "" {
-		if listableURI := storage.NewFileURI(startLocation); listableURI != nil {
+		if listableURI := fynestorage.NewFileURI(startLocation); listableURI != nil {
 			if listable, ok := listableURI.(fyne.ListableURI); ok {
 				folderDialog.SetLocation(listable)
 			}
@@ -423,7 +423,7 @@ func (mw *MainWindow) addGame() {
 		
 		// Set the starting location to the last used path
 		if startLocation := mw.getLastUsedPath(); startLocation != "" {
-			if listableURI := storage.NewFileURI(startLocation); listableURI != nil {
+			if listableURI := fynestorage.NewFileURI(startLocation); listableURI != nil {
 				if listable, ok := listableURI.(fyne.ListableURI); ok {
 					fileDialog.SetLocation(listable)
 				}
@@ -695,7 +695,7 @@ func (mw *MainWindow) editGame(game *models.Game) {
 		
 		// Set the starting location to the last used path
 		if startLocation := mw.getLastUsedPath(); startLocation != "" {
-			if listableURI := storage.NewFileURI(startLocation); listableURI != nil {
+			if listableURI := fynestorage.NewFileURI(startLocation); listableURI != nil {
 				if listable, ok := listableURI.(fyne.ListableURI); ok {
 					fileDialog.SetLocation(listable)
 				}
