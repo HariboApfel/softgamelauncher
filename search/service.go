@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
+	"image"
 	_ "image/gif"
 	_ "image/jpeg"
-	_ "image/png"
+	"image/png"
 	"io"
 	"net/http"
 	"net/url"
@@ -16,8 +17,11 @@ import (
 	"strings"
 	"time"
 
-	_ "golang.org/x/image/webp"
 	"github.com/PuerkitoBio/goquery"
+	"github.com/gen2brain/avif"
+	"github.com/gocolly/colly/v2"
+	"github.com/gocolly/colly/v2/debug"
+	_ "golang.org/x/image/webp"
 )
 
 // F95ZoneRSS represents the RSS feed structure from F95Zone
@@ -53,6 +57,21 @@ type SearchResult struct {
 	MatchScore  float64 // How well the game name matches
 	ImageURL    string  // URL of the image from description
 	ImagePath   string  // Local path where image is saved
+}
+
+// ImageCandidate represents a potential image found during scraping
+type ImageCandidate struct {
+	URL          string  // The image URL
+	Alt          string  // Alt text
+	Title        string  // Title attribute
+	Class        string  // CSS classes
+	Context      string  // Where the image was found (e.g., "thread-starter", "lightbox")
+	Score        float64 // Quality score for ranking
+	Width        int     // Image width if available
+	Height       int     // Image height if available
+	IsLightbox   bool    // Whether this is a lightbox/zoomable image
+	IsCover      bool    // Whether this appears to be a cover image
+	IsScreenshot bool    // Whether this appears to be a screenshot
 }
 
 // Service handles game searching functionality
@@ -138,8 +157,21 @@ func (s *Service) SearchGame(gameName string) ([]SearchResult, error) {
 
 		// Only include results with a reasonable match score
 		if matchScore > 0.5 {
-			// Extract image URL from description (but don't download yet)
-			imageURL := s.ExtractImageURL(item.Description)
+			// Try to extract image from source URL first, fallback to description
+			imageURL := ""
+			if item.Link != "" {
+				// For F95Zone links, we'll extract from the actual page later
+				// For now, just note that we prefer source URL extraction
+				fmt.Printf("DEBUG: Will extract image from source URL: %s\n", item.Link)
+			}
+
+			// Fallback to description image if needed
+			if imageURL == "" {
+				imageURL = s.ExtractImageURL(item.Description)
+				if imageURL != "" {
+					fmt.Printf("DEBUG: Found fallback image from description: %s\n", imageURL)
+				}
+			}
 
 			results = append(results, SearchResult{
 				Title:       item.Title,
@@ -222,8 +254,21 @@ func (s *Service) searchWithFallback(gameName string) ([]SearchResult, error) {
 
 		// Only include results with a reasonable match score
 		if matchScore > 0.5 {
-			// Extract image URL from description (but don't download yet)
-			imageURL := s.ExtractImageURL(item.Description)
+			// Try to extract image from source URL first, fallback to description
+			imageURL := ""
+			if item.Link != "" {
+				// For F95Zone links, we'll extract from the actual page later
+				// For now, just note that we prefer source URL extraction
+				fmt.Printf("DEBUG: Fallback will extract image from source URL: %s\n", item.Link)
+			}
+
+			// Fallback to description image if needed
+			if imageURL == "" {
+				imageURL = s.ExtractImageURL(item.Description)
+				if imageURL != "" {
+					fmt.Printf("DEBUG: Fallback found image from description: %s\n", imageURL)
+				}
+			}
 
 			results = append(results, SearchResult{
 				Title:       item.Title,
@@ -458,66 +503,507 @@ func (s *Service) ExtractImageURL(description string) string {
 	return ""
 }
 
-// ExtractImageFromSourceURL scrapes a webpage to find and download images
+// ExtractImageFromSourceURL scrapes a webpage using Colly to find and download images
 func (s *Service) ExtractImageFromSourceURL(sourceURL string) (string, error) {
 	if sourceURL == "" {
 		return "", fmt.Errorf("source URL is empty")
 	}
 
-	// Create HTTP request with proper headers
-	req, err := http.NewRequest("GET", sourceURL, nil)
+	fmt.Printf("DEBUG: Starting Colly extraction for URL: %s\n", sourceURL)
+
+	// Create a new collector
+	c := colly.NewCollector(
+		colly.Debugger(&debug.LogDebugger{}),
+		colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"),
+	)
+
+	// Set timeout
+	c.SetRequestTimeout(30 * time.Second)
+
+	// Add some delay between requests to be respectful
+	c.Limit(&colly.LimitRule{
+		DomainGlob:  "*f95zone.to*",
+		Parallelism: 1,
+		Delay:       1 * time.Second,
+	})
+
+	var foundImages []ImageCandidate
+	var pageTitle string
+
+	// Capture page title for context
+	c.OnHTML("title", func(e *colly.HTMLElement) {
+		pageTitle = strings.TrimSpace(e.Text)
+		fmt.Printf("DEBUG: Page title: %s\n", pageTitle)
+	})
+
+	// Extract images from thread starter post
+	if strings.Contains(sourceURL, "f95zone.to") {
+		s.setupF95ZoneImageExtraction(c, &foundImages, sourceURL)
+	} else {
+		s.setupGenericImageExtraction(c, &foundImages, sourceURL)
+	}
+
+	// Handle errors
+	c.OnError(func(r *colly.Response, err error) {
+		fmt.Printf("DEBUG: Colly error: %v\n", err)
+	})
+
+	// Start scraping
+	err := c.Visit(sourceURL)
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return "", fmt.Errorf("failed to visit URL: %w", err)
 	}
 
-	// Add headers to mimic a browser request
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	// Wait for the collector to finish
+	c.Wait()
 
-	resp, err := s.httpClient.Do(req)
+	if len(foundImages) == 0 {
+		return "", fmt.Errorf("no suitable images found on page")
+	}
+
+	// Find the best image candidate
+	bestImage := s.selectBestImageCandidate(foundImages, pageTitle)
+	if bestImage == nil {
+		return "", fmt.Errorf("no suitable image candidate found")
+	}
+
+	fmt.Printf("DEBUG: Selected best image: %s (score: %.2f)\n", bestImage.URL, bestImage.Score)
+
+	// Try downloading the selected image
+	imagePath, err := s.downloadImage(bestImage.URL)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch webpage: %w", err)
-	}
-	defer resp.Body.Close()
+		// If the best image fails, try a few alternative candidates
+		fmt.Printf("DEBUG: Best image failed (%v), trying alternative candidates\n", err)
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("webpage returned status %d", resp.StatusCode)
-	}
+		// Sort candidates by score and try alternatives
+		alternativeCandidates := s.sortCandidatesByScore(foundImages)
+		for _, candidate := range alternativeCandidates {
+			if candidate.URL == bestImage.URL {
+				continue // Skip the one that already failed
+			}
 
-	// Parse the HTML document
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse HTML: %w", err)
-	}
+			fmt.Printf("DEBUG: Trying alternative candidate: %s (score: %.2f)\n", candidate.URL, candidate.Score)
+			altImagePath, altErr := s.downloadImage(candidate.URL)
+			if altErr == nil {
+				fmt.Printf("DEBUG: Successfully downloaded alternative image: %s\n", altImagePath)
+				return altImagePath, nil
+			} else {
+				fmt.Printf("DEBUG: Alternative failed: %v\n", altErr)
+			}
+		}
 
-	// Find the best image from the page
-	imageURL := s.findBestImageFromPage(doc, sourceURL)
-	if imageURL == "" {
-		return "", fmt.Errorf("no suitable image found on page")
-	}
-
-	// Convert relative URLs to absolute URLs
-	baseURL, err := url.Parse(sourceURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse source URL: %w", err)
-	}
-
-	imgURL, err := url.Parse(imageURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse image URL: %w", err)
-	}
-
-	// Resolve relative URLs
-	absoluteImageURL := baseURL.ResolveReference(imgURL).String()
-
-	// Download the image
-	imagePath, err := s.downloadImage(absoluteImageURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to download image from %s: %w", absoluteImageURL, err)
+		return "", fmt.Errorf("failed to download image from %s: %w", bestImage.URL, err)
 	}
 
 	return imagePath, nil
+}
+
+// setupF95ZoneImageExtraction sets up Colly handlers for F95Zone specific image extraction
+func (s *Service) setupF95ZoneImageExtraction(c *colly.Collector, foundImages *[]ImageCandidate, sourceURL string) {
+	fmt.Printf("DEBUG: Setting up F95Zone image extraction\n")
+
+	// Target the thread starter post specifically
+	c.OnHTML(".message-threadStarterPost", func(e *colly.HTMLElement) {
+		fmt.Printf("DEBUG: Found thread starter post\n")
+
+		// Look for lightbox images first (highest priority)
+		e.ForEach(".lbContainer img[data-zoom-target]", func(i int, img *colly.HTMLElement) {
+			s.processImageCandidate(img, foundImages, "thread-starter-lightbox", sourceURL, true)
+		})
+
+		// Look for lightbox zoomer divs that might have data-src
+		e.ForEach(".lbContainer-zoomer", func(i int, div *colly.HTMLElement) {
+			dataSrc := div.Attr("data-src")
+			if dataSrc != "" {
+				// Create a fake image candidate from the zoomer div
+				s.processZoomerCandidate(div, foundImages, "thread-starter-zoomer", sourceURL, dataSrc)
+			}
+		})
+
+		// Look for bbImage with zoom target
+		e.ForEach(".bbImage[data-zoom-target]", func(i int, img *colly.HTMLElement) {
+			s.processImageCandidate(img, foundImages, "thread-starter-bb-zoom", sourceURL, true)
+		})
+
+		// Look for wrapped images
+		e.ForEach(".bbImageWrapper img", func(i int, img *colly.HTMLElement) {
+			s.processImageCandidate(img, foundImages, "thread-starter-wrapped", sourceURL, false)
+		})
+
+		// Look for any bbImage in thread starter
+		e.ForEach(".bbImage", func(i int, img *colly.HTMLElement) {
+			s.processImageCandidate(img, foundImages, "thread-starter-bb", sourceURL, false)
+		})
+
+		// Look for any other images in message content
+		e.ForEach(".message-userContent img", func(i int, img *colly.HTMLElement) {
+			s.processImageCandidate(img, foundImages, "thread-starter-content", sourceURL, false)
+		})
+
+		// Also look for linked images (a[href] containing image URLs)
+		e.ForEach("a[href]", func(i int, link *colly.HTMLElement) {
+			href := link.Attr("href")
+			if s.isImageURL(href) {
+				s.processLinkCandidate(link, foundImages, "thread-starter-link", sourceURL, href)
+			}
+		})
+	})
+}
+
+// setupGenericImageExtraction sets up Colly handlers for generic website image extraction
+func (s *Service) setupGenericImageExtraction(c *colly.Collector, foundImages *[]ImageCandidate, sourceURL string) {
+	fmt.Printf("DEBUG: Setting up generic image extraction\n")
+
+	// Look for common image patterns
+	selectors := []string{
+		"img[alt*='preview']", "img[alt*='Preview']",
+		"img[alt*='cover']", "img[alt*='Cover']",
+		"img[alt*='game']", "img[alt*='Game']",
+		"img[class*='cover']", "img[class*='preview']",
+		"img[class*='thumbnail']", "img[class*='hero']",
+		".preview img", ".cover img", ".thumbnail img",
+	}
+
+	for _, selector := range selectors {
+		c.OnHTML(selector, func(e *colly.HTMLElement) {
+			s.processImageCandidate(e, foundImages, "generic", sourceURL, false)
+		})
+	}
+
+	// Fallback: any image
+	c.OnHTML("img", func(e *colly.HTMLElement) {
+		s.processImageCandidate(e, foundImages, "fallback", sourceURL, false)
+	})
+}
+
+// processImageCandidate processes a found image element and adds it to candidates if suitable
+func (s *Service) processImageCandidate(img *colly.HTMLElement, foundImages *[]ImageCandidate, context, sourceURL string, isLightbox bool) {
+	// Get image URL from various attributes
+	imgURL := img.Attr("data-url")
+	if imgURL == "" {
+		imgURL = img.Attr("src")
+		if imgURL == "" {
+			imgURL = img.Attr("data-src")
+		}
+	}
+
+	if imgURL == "" {
+		return
+	}
+
+	// Convert thumbnail URLs to full-size URLs
+	imgURL = s.convertThumbnailToFullSize(imgURL)
+
+	// Convert relative URLs to absolute
+	if !strings.HasPrefix(imgURL, "http") {
+		baseURL, err := url.Parse(sourceURL)
+		if err == nil {
+			if parsedImgURL, err := url.Parse(imgURL); err == nil {
+				imgURL = baseURL.ResolveReference(parsedImgURL).String()
+			}
+		}
+	}
+
+	alt := img.Attr("alt")
+	title := img.Attr("title")
+	class := img.Attr("class")
+
+	// Skip unwanted images
+	if s.shouldSkipImage(imgURL, alt, class) {
+		fmt.Printf("DEBUG: Skipping image: %s (reason: unwanted type)\n", imgURL)
+		return
+	}
+
+	// Parse dimensions if available
+	width, height := s.parseImageDimensions(img)
+
+	// Determine if this is a screenshot
+	isScreenshot := strings.Contains(strings.ToLower(imgURL), "screenshot") ||
+		strings.Contains(strings.ToLower(alt), "screenshot")
+
+	// Determine if this is a cover image
+	isCover := strings.Contains(strings.ToLower(alt), "cover") ||
+		strings.Contains(strings.ToLower(imgURL), "cover") ||
+		strings.Contains(strings.ToLower(class), "cover")
+
+	candidate := ImageCandidate{
+		URL:          imgURL,
+		Alt:          alt,
+		Title:        title,
+		Class:        class,
+		Context:      context,
+		Score:        s.calculateImageScore(imgURL, alt, class, context, isLightbox, isCover, isScreenshot, width, height),
+		Width:        width,
+		Height:       height,
+		IsLightbox:   isLightbox,
+		IsCover:      isCover,
+		IsScreenshot: isScreenshot,
+	}
+
+	fmt.Printf("DEBUG: Found image candidate: %s (context: %s, score: %.2f, lightbox: %t, cover: %t, screenshot: %t)\n",
+		imgURL, context, candidate.Score, isLightbox, isCover, isScreenshot)
+
+	*foundImages = append(*foundImages, candidate)
+}
+
+// processZoomerCandidate processes a lightbox zoomer div that contains data-src
+func (s *Service) processZoomerCandidate(div *colly.HTMLElement, foundImages *[]ImageCandidate, context, sourceURL, dataSrc string) {
+	// Convert thumbnail URLs to full-size URLs
+	imgURL := s.convertThumbnailToFullSize(dataSrc)
+
+	// Convert relative URLs to absolute
+	if !strings.HasPrefix(imgURL, "http") {
+		baseURL, err := url.Parse(sourceURL)
+		if err == nil {
+			if parsedImgURL, err := url.Parse(imgURL); err == nil {
+				imgURL = baseURL.ResolveReference(parsedImgURL).String()
+			}
+		}
+	}
+
+	// Skip unwanted images
+	if s.shouldSkipImage(imgURL, "", "") {
+		fmt.Printf("DEBUG: Skipping zoomer image: %s (reason: unwanted type)\n", imgURL)
+		return
+	}
+
+	// Determine if this is a screenshot
+	isScreenshot := strings.Contains(strings.ToLower(imgURL), "screenshot")
+
+	// Determine if this is a cover image
+	isCover := strings.Contains(strings.ToLower(imgURL), "cover")
+
+	candidate := ImageCandidate{
+		URL:          imgURL,
+		Alt:          "",
+		Title:        "",
+		Class:        "",
+		Context:      context,
+		Score:        s.calculateImageScore(imgURL, "", "", context, true, isCover, isScreenshot, 0, 0), // Zoomer = lightbox
+		Width:        0,
+		Height:       0,
+		IsLightbox:   true,
+		IsCover:      isCover,
+		IsScreenshot: isScreenshot,
+	}
+
+	fmt.Printf("DEBUG: Found zoomer candidate: %s (context: %s, score: %.2f, lightbox: %t, cover: %t, screenshot: %t)\n",
+		imgURL, context, candidate.Score, true, isCover, isScreenshot)
+
+	*foundImages = append(*foundImages, candidate)
+}
+
+// processLinkCandidate processes a link that points to an image
+func (s *Service) processLinkCandidate(link *colly.HTMLElement, foundImages *[]ImageCandidate, context, sourceURL, href string) {
+	// Convert thumbnail URLs to full-size URLs
+	imgURL := s.convertThumbnailToFullSize(href)
+
+	// Convert relative URLs to absolute
+	if !strings.HasPrefix(imgURL, "http") {
+		baseURL, err := url.Parse(sourceURL)
+		if err == nil {
+			if parsedImgURL, err := url.Parse(imgURL); err == nil {
+				imgURL = baseURL.ResolveReference(parsedImgURL).String()
+			}
+		}
+	}
+
+	// Skip unwanted images
+	if s.shouldSkipImage(imgURL, "", "") {
+		fmt.Printf("DEBUG: Skipping linked image: %s (reason: unwanted type)\n", imgURL)
+		return
+	}
+
+	// Determine if this is a screenshot
+	isScreenshot := strings.Contains(strings.ToLower(imgURL), "screenshot")
+
+	// Determine if this is a cover image
+	isCover := strings.Contains(strings.ToLower(imgURL), "cover")
+
+	candidate := ImageCandidate{
+		URL:          imgURL,
+		Alt:          "",
+		Title:        "",
+		Class:        "",
+		Context:      context,
+		Score:        s.calculateImageScore(imgURL, "", "", context, false, isCover, isScreenshot, 0, 0),
+		Width:        0,
+		Height:       0,
+		IsLightbox:   false,
+		IsCover:      isCover,
+		IsScreenshot: isScreenshot,
+	}
+
+	fmt.Printf("DEBUG: Found link candidate: %s (context: %s, score: %.2f, lightbox: %t, cover: %t, screenshot: %t)\n",
+		imgURL, context, candidate.Score, false, isCover, isScreenshot)
+
+	*foundImages = append(*foundImages, candidate)
+}
+
+// isImageURL checks if a URL points to an image
+func (s *Service) isImageURL(url string) bool {
+	imageExtensions := []string{".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+	urlLower := strings.ToLower(url)
+
+	for _, ext := range imageExtensions {
+		if strings.Contains(urlLower, ext) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// shouldSkipImage determines if an image should be skipped based on common patterns
+func (s *Service) shouldSkipImage(imgURL, alt, class string) bool {
+	skipPatterns := []string{
+		"avatar", "icon", "emoji", "smilie", "data:image",
+	}
+
+	imgURLLower := strings.ToLower(imgURL)
+	altLower := strings.ToLower(alt)
+	classLower := strings.ToLower(class)
+
+	for _, pattern := range skipPatterns {
+		if strings.Contains(imgURLLower, pattern) ||
+			strings.Contains(altLower, pattern) ||
+			strings.Contains(classLower, pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// parseImageDimensions extracts width and height from image attributes
+func (s *Service) parseImageDimensions(img *colly.HTMLElement) (width, height int) {
+	if w := img.Attr("width"); w != "" {
+		fmt.Sscanf(w, "%d", &width)
+	}
+	if h := img.Attr("height"); h != "" {
+		fmt.Sscanf(h, "%d", &height)
+	}
+	return width, height
+}
+
+// calculateImageScore calculates a quality score for an image candidate
+func (s *Service) calculateImageScore(imgURL, alt, class, context string, isLightbox, isCover, isScreenshot bool, width, height int) float64 {
+	score := 0.0
+
+	// Base score by context (where the image was found)
+	switch context {
+	case "thread-starter-lightbox":
+		score += 100.0 // Highest priority for thread starter lightbox
+	case "thread-starter-bb-zoom":
+		score += 90.0
+	case "thread-starter-wrapped":
+		score += 80.0
+	case "thread-starter-bb":
+		score += 70.0
+	case "thread-starter-content":
+		score += 60.0
+	case "generic":
+		score += 30.0
+	case "fallback":
+		score += 10.0
+	}
+
+	// Bonus for lightbox images
+	if isLightbox {
+		score += 50.0
+	}
+
+	// Bonus for cover images
+	if isCover {
+		score += 40.0
+	}
+
+	// Heavy penalty for screenshots
+	if isScreenshot {
+		score -= 80.0
+	}
+
+	// Size bonus (larger is generally better for cover images)
+	if width > 0 && height > 0 {
+		area := width * height
+		if area > 100000 { // Large image
+			score += 20.0
+		} else if area > 50000 { // Medium image
+			score += 10.0
+		} else if area < 10000 { // Small image penalty
+			score -= 10.0
+		}
+	}
+
+	// Bonus for images that appear to be covers based on filename
+	imgURLLower := strings.ToLower(imgURL)
+	if strings.Contains(imgURLLower, "cover") || strings.Contains(imgURLLower, "banner") {
+		score += 30.0
+	}
+
+	// Penalty for thumbnails
+	if strings.Contains(imgURLLower, "thumb") || strings.Contains(imgURLLower, "small") {
+		score -= 20.0
+	}
+
+	return score
+}
+
+// selectBestImageCandidate selects the best image from candidates
+func (s *Service) selectBestImageCandidate(candidates []ImageCandidate, pageTitle string) *ImageCandidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	fmt.Printf("DEBUG: Selecting best image from %d candidates\n", len(candidates))
+
+	// Sort candidates by score (highest first)
+	bestCandidate := &candidates[0]
+	for i := 1; i < len(candidates); i++ {
+		if candidates[i].Score > bestCandidate.Score {
+			bestCandidate = &candidates[i]
+		}
+	}
+
+	// Additional filtering: skip screenshots even if they have high scores
+	for _, candidate := range candidates {
+		if !candidate.IsScreenshot && candidate.Score > 50.0 {
+			fmt.Printf("DEBUG: Selected non-screenshot candidate with score %.2f over screenshot with score %.2f\n",
+				candidate.Score, bestCandidate.Score)
+			return &candidate
+		}
+	}
+
+	return bestCandidate
+}
+
+// sortCandidatesByScore sorts image candidates by score in descending order
+func (s *Service) sortCandidatesByScore(candidates []ImageCandidate) []ImageCandidate {
+	// Create a copy to avoid modifying the original slice
+	sorted := make([]ImageCandidate, len(candidates))
+	copy(sorted, candidates)
+
+	// Simple bubble sort by score (descending)
+	for i := 0; i < len(sorted)-1; i++ {
+		for j := 0; j < len(sorted)-i-1; j++ {
+			if sorted[j].Score < sorted[j+1].Score {
+				sorted[j], sorted[j+1] = sorted[j+1], sorted[j]
+			}
+		}
+	}
+
+	return sorted
+}
+
+// convertThumbnailToFullSize converts thumbnail URLs to full-size image URLs
+func (s *Service) convertThumbnailToFullSize(imgURL string) string {
+	// F95Zone thumbnail pattern: .../thumb/filename -> .../filename
+	if strings.Contains(imgURL, "/thumb/") {
+		fullSizeURL := strings.Replace(imgURL, "/thumb/", "/", 1)
+		fmt.Printf("DEBUG: Converting thumbnail URL: %s -> %s\n", imgURL, fullSizeURL)
+		return fullSizeURL
+	}
+	return imgURL
 }
 
 // findBestImageFromPage finds the most suitable image for a game from a webpage
@@ -526,13 +1012,15 @@ func (s *Service) findBestImageFromPage(doc *goquery.Document, sourceURL string)
 	var selectors []string
 
 	if strings.Contains(sourceURL, "f95zone.to") {
-		// F95Zone specific selectors
+		// F95Zone specific selectors - only target thread starter post
 		selectors = []string{
-			"img.bbImage", // Forum images
-			".message-content img", // Message content images
-			"#message-1 img", // First message images
-			".js-messageContent img", // Modern F95Zone message content
-			"img[data-url]", // F95Zone click-to-expand images
+			".message-threadStarterPost .bbImage[data-zoom-target]",         // Thread starter lightbox images with zoom (highest priority)
+			".message-threadStarterPost .lbContainer img[data-zoom-target]", // Thread starter lightbox container images
+			".message-threadStarterPost .bbImageWrapper img",                // Thread starter wrapped images
+			".message-threadStarterPost img[data-zoom-target]",              // Thread starter images with zoom
+			".message-threadStarterPost .bbImage",                           // Thread starter forum images
+			".message-threadStarterPost .message-userContent img",           // Thread starter content images
+			".message-threadStarterPost img",                                // Any images in thread starter post
 		}
 	} else {
 		// Generic selectors for other sites
@@ -550,62 +1038,133 @@ func (s *Service) findBestImageFromPage(doc *goquery.Document, sourceURL string)
 	// Try each selector in priority order
 	for _, selector := range selectors {
 		var bestImageURL string
-		largestSize := 0
 
-		doc.Find(selector).Each(func(i int, s *goquery.Selection) {
-			// Get image URL from src or data-url attribute
-			imgURL, exists := s.Attr("src")
-			if !exists {
-				// Try data-url for F95Zone click-to-expand images
-				imgURL, exists = s.Attr("data-url")
-			}
-			if !exists {
-				return
-			}
+		// For F95Zone lightbox selectors, prioritize the first valid image
+		isLightboxSelector := strings.Contains(selector, "data-url") ||
+			strings.Contains(selector, "bbImageWrapper") ||
+			strings.Contains(selector, "data-zoom-target")
 
-			// Skip small icons, avatars, and common unwanted images
-			if s.HasClass("avatar") || s.HasClass("icon") ||
-				strings.Contains(imgURL, "avatar") || strings.Contains(imgURL, "icon") ||
-				strings.Contains(imgURL, "emoji") || strings.Contains(imgURL, "smilie") {
-				return
-			}
+		if isLightboxSelector && strings.Contains(sourceURL, "f95zone.to") {
+			// For lightbox images, take the first valid one
+			fmt.Printf("DEBUG: Checking lightbox selector: %s\n", selector)
+			doc.Find(selector).EachWithBreak(func(i int, s *goquery.Selection) bool {
+				// Get image URL from data-url attribute first (lightbox), then src
+				imgURL, exists := s.Attr("data-url")
+				if !exists || imgURL == "" {
+					// data-url is empty or doesn't exist, try src
+					imgURL, exists = s.Attr("src")
+					if !exists || imgURL == "" {
+						// Try data-src as another fallback
+						imgURL, exists = s.Attr("data-src")
+					}
+				}
+				if !exists || imgURL == "" {
+					return true // Continue to next image
+				}
 
-			// Try to get image dimensions
-			width := 0
-			height := 0
-			if w, exists := s.Attr("width"); exists {
-				fmt.Sscanf(w, "%d", &width)
-			}
-			if h, exists := s.Attr("height"); exists {
-				fmt.Sscanf(h, "%d", &height)
-			}
+				// Debug output
+				alt, _ := s.Attr("alt")
+				class, _ := s.Attr("class")
+				zoomTarget, _ := s.Attr("data-zoom-target")
+				fmt.Printf("DEBUG: Found image %d: %s (alt=%s, class=%s, zoom-target=%s)\n",
+					i, imgURL, alt, class, zoomTarget)
 
-			// Calculate image size (use area as a rough measure)
-			size := width * height
+				// Skip small icons, avatars, and common unwanted images
+				if s.HasClass("avatar") || s.HasClass("icon") ||
+					strings.Contains(imgURL, "avatar") || strings.Contains(imgURL, "icon") ||
+					strings.Contains(imgURL, "emoji") || strings.Contains(imgURL, "smilie") ||
+					strings.Contains(imgURL, "data:image") { // Skip data URIs
+					return true // Continue to next image
+				}
 
-			// If no dimensions available, prioritize by position (first images are often better)
-			if size == 0 {
-				size = 1000 - i // Give preference to earlier images
-			}
+				// For lightbox images, also skip very small images based on URL patterns
+				if strings.Contains(imgURL, "thumb") || strings.Contains(imgURL, "small") {
+					return true // Continue to next image
+				}
 
-			// Skip very small images (likely icons)
-			if (width > 0 && width < 50) || (height > 0 && height < 50) {
-				return
-			}
+				// Skip screenshot images - prefer cover/banner images
+				if strings.Contains(strings.ToLower(imgURL), "screenshot") ||
+					strings.Contains(strings.ToLower(alt), "screenshot") {
+					return true // Continue to next image
+				}
 
-			// Update best image if this one is larger
-			if size > largestSize {
-				largestSize = size
 				bestImageURL = imgURL
-			}
-		})
+				fmt.Printf("DEBUG: Selected lightbox image: %s\n", imgURL)
+				return false // Break - we found our first lightbox image
+			})
+		} else {
+			// For non-lightbox selectors, use the existing logic (largest image)
+			largestSize := 0
+
+			doc.Find(selector).Each(func(i int, s *goquery.Selection) {
+				// Get image URL from src or data-url attribute
+				imgURL, exists := s.Attr("src")
+				if !exists || imgURL == "" {
+					// Try data-url for F95Zone click-to-expand images
+					imgURL, exists = s.Attr("data-url")
+					if !exists || imgURL == "" {
+						// Try data-src as another fallback
+						imgURL, exists = s.Attr("data-src")
+					}
+				}
+				if !exists || imgURL == "" {
+					return
+				}
+
+				// Skip small icons, avatars, and common unwanted images
+				if s.HasClass("avatar") || s.HasClass("icon") ||
+					strings.Contains(imgURL, "avatar") || strings.Contains(imgURL, "icon") ||
+					strings.Contains(imgURL, "emoji") || strings.Contains(imgURL, "smilie") ||
+					strings.Contains(imgURL, "data:image") { // Skip data URIs
+					return
+				}
+
+				// Skip screenshot images - prefer cover/banner images
+				altAttr, _ := s.Attr("alt")
+				if strings.Contains(strings.ToLower(imgURL), "screenshot") ||
+					strings.Contains(strings.ToLower(altAttr), "screenshot") {
+					return // Skip screenshot images
+				}
+
+				// Try to get image dimensions
+				width := 0
+				height := 0
+				if w, exists := s.Attr("width"); exists {
+					fmt.Sscanf(w, "%d", &width)
+				}
+				if h, exists := s.Attr("height"); exists {
+					fmt.Sscanf(h, "%d", &height)
+				}
+
+				// Calculate image size (use area as a rough measure)
+				size := width * height
+
+				// If no dimensions available, prioritize by position (first images are often better)
+				if size == 0 {
+					size = 1000 - i // Give preference to earlier images
+				}
+
+				// Skip very small images (likely icons)
+				if (width > 0 && width < 50) || (height > 0 && height < 50) {
+					return
+				}
+
+				// Update best image if this one is larger
+				if size > largestSize {
+					largestSize = size
+					bestImageURL = imgURL
+				}
+			})
+		}
 
 		// Return the first good image we find
 		if bestImageURL != "" {
+			fmt.Printf("DEBUG: Final selected image URL: %s\n", bestImageURL)
 			return bestImageURL
 		}
 	}
 
+	fmt.Printf("DEBUG: No suitable image found on page\n")
 	return ""
 }
 
@@ -643,6 +1202,11 @@ func (s *Service) downloadImage(imageURL string) (string, error) {
 		}
 		// If existing file is invalid, remove it and re-download
 		os.Remove(imagePath)
+	}
+
+	// Ensure the directory exists
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0755); err != nil {
+		return "", fmt.Errorf("failed to create image directory: %w", err)
 	}
 
 	// Download the image with proper headers
@@ -686,22 +1250,106 @@ func (s *Service) downloadImage(imageURL string) (string, error) {
 		return "", fmt.Errorf("failed to save image: %w", err)
 	}
 
-	// Validate that the downloaded file is actually an image
+	// Validate that the downloaded file is actually an image (this will convert AVIF to PNG if needed)
 	if err := s.validateImageFile(imagePath); err != nil {
-		// For now, just log the error but don't delete the file
-		// This will help us debug what's being downloaded
 		fmt.Printf("DEBUG: Downloaded file validation failed for %s: %v\n", imagePath, err)
-		// Let's examine what was actually downloaded
-		if content, readErr := os.ReadFile(imagePath); readErr == nil {
-			length := 200
-			if len(content) < length {
-				length = len(content)
-			}
-			fmt.Printf("DEBUG: Downloaded file content (first %d bytes): %s\n", length, string(content[:length]))
-		}
-		// Don't delete the file yet - let's see what it contains
-		// os.Remove(imagePath)
-		// return "", fmt.Errorf("downloaded file is not a valid image: %w", err)
+		// Remove the invalid file and return error
+		os.Remove(imagePath)
+		return "", fmt.Errorf("downloaded file is not a valid image: %w", err)
+	}
+
+	return imagePath, nil
+}
+
+// getBaseImageURL extracts the base URL without extension for trying alternative formats
+func (s *Service) getBaseImageURL(imageURL string) string {
+	// Remove the file extension
+	lastDot := strings.LastIndex(imageURL, ".")
+	if lastDot == -1 {
+		return imageURL
+	}
+
+	// Also check for query parameters
+	lastQuestion := strings.LastIndex(imageURL, "?")
+	if lastQuestion > lastDot {
+		return imageURL[:lastDot]
+	}
+
+	return imageURL[:lastDot]
+}
+
+// downloadImageWithValidation downloads and validates an image in one step
+func (s *Service) downloadImageWithValidation(imageURL string) (string, error) {
+	// Create a filename from the URL
+	urlParts := strings.Split(imageURL, "/")
+	if len(urlParts) == 0 {
+		return "", fmt.Errorf("invalid image URL")
+	}
+
+	filename := urlParts[len(urlParts)-1]
+	// Clean the filename to remove query parameters
+	if idx := strings.Index(filename, "?"); idx != -1 {
+		filename = filename[:idx]
+	}
+
+	// Add extension if missing
+	if !strings.Contains(filename, ".") {
+		filename += ".jpg"
+	}
+
+	// Create full path
+	imagePath := filepath.Join(s.imageDir, filename)
+
+	// Ensure the directory exists
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0755); err != nil {
+		return "", fmt.Errorf("failed to create image directory: %w", err)
+	}
+
+	// Download the image with proper headers
+	req, err := http.NewRequest("GET", imageURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Add headers to mimic a browser request
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+	req.Header.Set("Accept", "image/webp,image/apng,image/*,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Referer", "https://f95zone.to/")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to download image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download image, status: %d", resp.StatusCode)
+	}
+
+	// Check content type to ensure it's an image
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(contentType, "image/") {
+		return "", fmt.Errorf("response is not an image, content-type: %s", contentType)
+	}
+
+	// Create the file
+	file, err := os.Create(imagePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create image file: %w", err)
+	}
+	defer file.Close()
+
+	// Copy the response body to the file
+	_, err = io.Copy(file, resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to save image: %w", err)
+	}
+
+	// Validate the image
+	if err := s.validateImageFile(imagePath); err != nil {
+		os.Remove(imagePath) // Clean up invalid file
+		return "", fmt.Errorf("downloaded image validation failed: %w", err)
 	}
 
 	return imagePath, nil
@@ -731,7 +1379,7 @@ func (s *Service) validateImageFile(filePath string) error {
 	defer file.Close()
 
 	// Read first few bytes to check image signature
-	buffer := make([]byte, 8)
+	buffer := make([]byte, 12)
 	_, err = file.Read(buffer)
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
@@ -754,7 +1402,68 @@ func (s *Service) validateImageFile(filePath string) error {
 		return nil
 	}
 
+	// Check for AVIF format (ftypavif) and convert to PNG
+	if bytes.Contains(buffer, []byte("ftyp")) && bytes.Contains(buffer, []byte("avif")) {
+		fmt.Printf("DEBUG: AVIF file detected, converting to PNG: %s\n", filePath)
+		err := s.convertAVIFToPNG(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to convert AVIF to PNG: %w", err)
+		}
+		return nil // Successfully converted
+	}
+
 	return fmt.Errorf("file is not a valid image format")
+}
+
+// convertAVIFToPNG converts an AVIF file to PNG format in place
+func (s *Service) convertAVIFToPNG(filePath string) error {
+	// Read the AVIF file
+	avifFile, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open AVIF file: %w", err)
+	}
+	defer avifFile.Close()
+
+	// Decode AVIF image
+	var img image.Image
+	img, err = avif.Decode(avifFile)
+	if err != nil {
+		return fmt.Errorf("failed to decode AVIF image: %w", err)
+	}
+
+	// Create new PNG file path (replace extension)
+	pngPath := strings.TrimSuffix(filePath, filepath.Ext(filePath)) + ".png"
+
+	// Create PNG file
+	pngFile, err := os.Create(pngPath)
+	if err != nil {
+		return fmt.Errorf("failed to create PNG file: %w", err)
+	}
+	defer pngFile.Close()
+
+	// Encode as PNG
+	err = png.Encode(pngFile, img)
+	if err != nil {
+		return fmt.Errorf("failed to encode PNG: %w", err)
+	}
+
+	// Remove the original AVIF file
+	err = os.Remove(filePath)
+	if err != nil {
+		fmt.Printf("DEBUG: Warning - could not remove original AVIF file: %v\n", err)
+		// Don't return error here, we successfully created the PNG
+	}
+
+	// Rename PNG file to original path (if extensions differ)
+	if pngPath != filePath {
+		err = os.Rename(pngPath, filePath)
+		if err != nil {
+			return fmt.Errorf("failed to rename PNG file: %w", err)
+		}
+	}
+
+	fmt.Printf("DEBUG: Successfully converted AVIF to PNG: %s\n", filePath)
+	return nil
 }
 
 // testFyneImageSupport tests what image formats Fyne can load

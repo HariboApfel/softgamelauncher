@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"runtime"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
@@ -26,7 +28,6 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/ncruces/zenity"
-	"runtime"
 )
 
 // MainWindow represents the main application window
@@ -126,7 +127,7 @@ func (mw *MainWindow) setupUI() {
 			fetchedVersionLabel := NewColoredLabel("Fetched Version", color.White, color.Black)
 			fetchedVersionContainer := container.NewHBox(fetchedVersionLabel)
 
-			// Source URL column - compact  
+			// Source URL column - compact
 			sourceURLHyperlink := widget.NewHyperlink("Source URL", nil)
 			sourceURLContainer := container.NewHBox(sourceURLHyperlink)
 
@@ -166,25 +167,27 @@ func (mw *MainWindow) setupUI() {
 						// Update image (first element)
 						if gameImage, ok := nameContainer.Objects[0].(*canvas.Image); ok {
 							// Try to load game image if available
+							var desiredFile string
+							var desiredRes fyne.Resource
 							if game.ImagePath != "" {
-								// Check if image file exists
 								if _, err := os.Stat(game.ImagePath); err == nil {
-									// Load image from file
-									fmt.Printf("DEBUG: Loading image for %s: %s\n", game.Name, game.ImagePath)
-									gameImage.File = game.ImagePath
-									gameImage.Resource = nil // Clear resource to use file
+									desiredFile = game.ImagePath
+									desiredRes = nil
 								} else {
-									// Image file is missing, just show default icon
-									fmt.Printf("DEBUG: Image file missing for %s, using default icon\n", game.Name)
-									gameImage.File = "" // Clear file
-									gameImage.Resource = theme.ComputerIcon()
+									desiredFile = ""
+									desiredRes = theme.ComputerIcon()
 								}
 							} else {
-								fmt.Printf("DEBUG: No image path for %s, using default icon\n", game.Name)
-								gameImage.File = "" // Clear file
-								gameImage.Resource = theme.ComputerIcon()
+								desiredFile = ""
+								desiredRes = theme.ComputerIcon()
 							}
-							gameImage.Refresh()
+
+							// Apply only if changed to avoid unnecessary refresh loops
+							if gameImage.File != desiredFile || gameImage.Resource != desiredRes {
+								gameImage.File = desiredFile
+								gameImage.Resource = desiredRes
+								gameImage.Refresh()
+							}
 						}
 
 						// Update name label (second element)
@@ -341,7 +344,7 @@ func (mw *MainWindow) saveLastUsedPath(path string) {
 // Priority order: 1) Dolphin/kdialog (KDE), 2) Zenity (GTK), 3) Fyne (fallback)
 func (mw *MainWindow) openNativeFileDialog() (string, error) {
 	startPath := mw.getLastUsedPath()
-	
+
 	// Try Dolphin first (KDE file manager)
 	if mw.isDolphinAvailable() {
 		if filename, err := mw.openDolphinFileDialog(startPath); err == nil {
@@ -352,7 +355,7 @@ func (mw *MainWindow) openNativeFileDialog() (string, error) {
 		}
 		// If Dolphin fails, continue to other options
 	}
-	
+
 	// Check if zenity is available as second option
 	if zenity.IsAvailable() {
 		filename, err := zenity.SelectFile(
@@ -363,7 +366,7 @@ func (mw *MainWindow) openNativeFileDialog() (string, error) {
 				{"All files", []string{"*"}, false},
 			},
 		)
-		
+
 		if err != nil {
 			// Check if user cancelled
 			if err == zenity.ErrCanceled {
@@ -372,15 +375,15 @@ func (mw *MainWindow) openNativeFileDialog() (string, error) {
 			// On error, fallback to Fyne dialog
 			return mw.openFyneFileDialog(startPath)
 		}
-		
+
 		// Save the directory for future use
 		if filename != "" {
 			mw.saveLastUsedPath(filename)
 		}
-		
+
 		return filename, nil
 	}
-	
+
 	// Fallback to Fyne file dialog if neither Dolphin nor zenity is available
 	return mw.openFyneFileDialog(startPath)
 }
@@ -390,7 +393,7 @@ func (mw *MainWindow) openFyneFileDialog(startPath string) (string, error) {
 	// Create a channel to receive the result
 	resultChan := make(chan string, 1)
 	errorChan := make(chan error, 1)
-	
+
 	fileDialog := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 		if err != nil {
 			errorChan <- err
@@ -404,7 +407,7 @@ func (mw *MainWindow) openFyneFileDialog(startPath string) (string, error) {
 		selectedPath := reader.URI().Path()
 		resultChan <- selectedPath
 	}, mw.window)
-	
+
 	// Set the starting location to the last used path
 	if startPath != "" {
 		if listableURI := fynestorage.NewFileURI(startPath); listableURI != nil {
@@ -413,9 +416,9 @@ func (mw *MainWindow) openFyneFileDialog(startPath string) (string, error) {
 			}
 		}
 	}
-	
+
 	fileDialog.Show()
-	
+
 	// Wait for result
 	select {
 	case filename := <-resultChan:
@@ -436,7 +439,7 @@ func (mw *MainWindow) isDolphinAvailable() bool {
 	if err != nil {
 		return false
 	}
-	
+
 	// Optionally also check for dolphin itself
 	_, err = exec.LookPath("dolphin")
 	return err == nil
@@ -448,12 +451,12 @@ func (mw *MainWindow) openDolphinFileDialog(startPath string) (string, error) {
 	// However, for file picking, we'll use a different approach
 	// Since Dolphin doesn't have a direct file picker mode, we'll use kdialog instead
 	// which is the KDE dialog utility that Dolphin/KDE uses
-	
+
 	// Check if kdialog is available (comes with KDE/Dolphin)
 	if _, err := exec.LookPath("kdialog"); err != nil {
 		return "", err
 	}
-	
+
 	// Build kdialog command for file selection
 	args := []string{
 		"--getopenfilename",
@@ -461,10 +464,10 @@ func (mw *MainWindow) openDolphinFileDialog(startPath string) (string, error) {
 		"*.exe *.sh *.run *.AppImage *", // Common executable file filters
 		"--title", "Select Executable",
 	}
-	
+
 	cmd := exec.Command("kdialog", args...)
 	output, err := cmd.Output()
-	
+
 	if err != nil {
 		// Check if this is due to user cancellation
 		if exitError, ok := err.(*exec.ExitError); ok && exitError.ExitCode() == 1 {
@@ -473,7 +476,7 @@ func (mw *MainWindow) openDolphinFileDialog(startPath string) (string, error) {
 		}
 		return "", err
 	}
-	
+
 	filename := strings.TrimSpace(string(output))
 	return filename, nil
 }
@@ -534,7 +537,7 @@ func (mw *MainWindow) importGames() {
 		dialog.ShowInformation("Import Complete",
 			fmt.Sprintf("Imported %d new games.", len(games)), mw.window)
 	}, mw.window)
-	
+
 	// Set the starting location to the last used path
 	if startLocation := mw.getLastUsedPath(); startLocation != "" {
 		if listableURI := fynestorage.NewFileURI(startLocation); listableURI != nil {
@@ -543,7 +546,7 @@ func (mw *MainWindow) importGames() {
 			}
 		}
 	}
-	
+
 	folderDialog.Show()
 }
 
@@ -879,7 +882,7 @@ func (mw *MainWindow) editGame(game *models.Game) {
 			if originalSourceURL != game.SourceURL && game.SourceURL != "" {
 				go func() {
 					fmt.Printf("DEBUG: Source URL changed for %s, re-downloading image from: %s\n", game.Name, game.SourceURL)
-					
+
 					// Try to extract image directly from source URL
 					imagePath, err := mw.searchService.ExtractImageFromSourceURL(game.SourceURL)
 					if err != nil {
@@ -950,7 +953,6 @@ func (mw *MainWindow) updateFetchedVersionLabel(game *models.Game, label *Colore
 	// If no source URL, show as unavailable
 	if game.SourceURL == "" {
 		label.SetText("No source")
-		label.Refresh()
 		return
 	}
 
@@ -985,15 +987,19 @@ func (mw *MainWindow) updateFetchedVersionLabel(game *models.Game, label *Colore
 			textColor = color.Black
 		}
 
-		// Update the label
-		label.SetText(mw.truncateText(displayText, 20))
-		label.SetColors(bgColor, textColor)
-		label.Refresh()
+		// Update the label only if something changed to avoid unnecessary refreshes
+		newText := mw.truncateText(displayText, 20)
+		if label.text != newText || label.bgColor != bgColor || label.textColor != textColor {
+			label.SetText(newText)
+			label.SetColors(bgColor, textColor)
+		}
 	} else {
 		// No cached version - show as not checked
-		label.SetText("Not checked")
-		label.SetColors(color.NRGBA{R: 128, G: 128, B: 128, A: 100}, color.Black)
-		label.Refresh()
+		// Only update if required
+		if label.text != "Not checked" || label.bgColor != (color.NRGBA{R: 128, G: 128, B: 128, A: 100}) {
+			label.SetText("Not checked")
+			label.SetColors(color.NRGBA{R: 128, G: 128, B: 128, A: 100}, color.Black)
+		}
 	}
 }
 
@@ -1349,7 +1355,8 @@ func (mw *MainWindow) fetchImagesForAllGames() {
 					hasValidImage = true
 					fmt.Printf("DEBUG: Skipping %s - valid image exists: %s\n", game.Name, game.ImagePath)
 				} else {
-					fmt.Printf("DEBUG: %s has ImagePath but file is missing: %s\n", game.Name, game.ImagePath)
+					fmt.Printf("DEBUG: %s has ImagePath but file is missing: %s - clearing path\n", game.Name, game.ImagePath)
+					game.ImagePath = "" // Clear the invalid path
 				}
 			}
 
@@ -1394,21 +1401,40 @@ func (mw *MainWindow) fetchImagesForAllGames() {
 				fmt.Printf("DEBUG: Best match for %s: %s (score: %.2f, imageURL: %s)\n",
 					game.Name, bestMatch.Title, bestMatch.MatchScore, bestMatch.ImageURL)
 
-				// Download image if we have a good match and image URL
-				if bestMatch.MatchScore > 0.7 && bestMatch.ImageURL != "" {
-					fmt.Printf("DEBUG: Attempting to download image for %s from %s\n", game.Name, bestMatch.ImageURL)
-					err := mw.searchService.DownloadImageForResult(&bestMatch)
-					if err == nil && bestMatch.ImagePath != "" {
-						game.ImagePath = bestMatch.ImagePath
-						downloadedCount++
-						fmt.Printf("DEBUG: Successfully downloaded image for %s: %s\n", game.Name, game.ImagePath)
+				// Download image if we have a good match
+				if bestMatch.MatchScore > 0.7 {
+					// First try to extract from source URL (F95Zone page)
+					if bestMatch.Link != "" {
+						fmt.Printf("DEBUG: Attempting to extract image from source URL for %s: %s\n", game.Name, bestMatch.Link)
+						imagePath, err := mw.searchService.ExtractImageFromSourceURL(bestMatch.Link)
+						if err == nil && imagePath != "" {
+							game.ImagePath = imagePath
+							downloadedCount++
+							fmt.Printf("DEBUG: Successfully extracted image from source URL for %s: %s\n", game.Name, imagePath)
+							continue
+						} else {
+							fmt.Printf("DEBUG: Failed to extract from source URL for %s: %v\n", game.Name, err)
+						}
+					}
+
+					// Fallback to description image if source URL extraction failed
+					if bestMatch.ImageURL != "" {
+						fmt.Printf("DEBUG: Falling back to description image for %s from %s\n", game.Name, bestMatch.ImageURL)
+						err := mw.searchService.DownloadImageForResult(&bestMatch)
+						if err == nil && bestMatch.ImagePath != "" {
+							game.ImagePath = bestMatch.ImagePath
+							downloadedCount++
+							fmt.Printf("DEBUG: Successfully downloaded description image for %s: %s\n", game.Name, game.ImagePath)
+						} else {
+							failedCount++
+							fmt.Printf("DEBUG: Failed to download description image for %s: %v\n", game.Name, err)
+						}
 					} else {
 						failedCount++
-						fmt.Printf("DEBUG: Failed to download image for %s: %v\n", game.Name, err)
+						fmt.Printf("DEBUG: No image source available for %s\n", game.Name)
 					}
 				} else {
-					fmt.Printf("DEBUG: Skipping download for %s - score: %.2f, imageURL: %s\n",
-						game.Name, bestMatch.MatchScore, bestMatch.ImageURL)
+					fmt.Printf("DEBUG: Skipping download for %s - score: %.2f\n", game.Name, bestMatch.MatchScore)
 				}
 			} else {
 				fmt.Printf("DEBUG: No search results found for %s\n", game.Name)
