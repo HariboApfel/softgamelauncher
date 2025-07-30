@@ -10,6 +10,7 @@ import (
 	"gamelauncher/storage"
 	"image/color"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -298,15 +300,43 @@ func (mw *MainWindow) createToolbar() *widget.Toolbar {
 	)
 }
 
+// getLastUsedPath returns the last used path or user's home directory
+func (mw *MainWindow) getLastUsedPath() string {
+	if mw.settings.LastUsedPath != "" {
+		return mw.settings.LastUsedPath
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "."
+	}
+	return homeDir
+}
+
+// saveLastUsedPath saves the last used directory path
+func (mw *MainWindow) saveLastUsedPath(path string) {
+	if path != "" {
+		// Extract directory from path if it's a file
+		if stat, err := os.Stat(path); err == nil && !stat.IsDir() {
+			path = filepath.Dir(path)
+		}
+		mw.settings.LastUsedPath = path
+		mw.saveSettings()
+	}
+}
+
 // importGames shows a dialog to import games from a folder
 func (mw *MainWindow) importGames() {
-	dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
+	// Create a file dialog that starts at the last used path
+	folderDialog := dialog.NewFolderOpen(func(uri fyne.ListableURI, err error) {
 		if err != nil || uri == nil {
 			if err != nil {
 				dialog.ShowError(err, mw.window)
 			}
 			return
 		}
+
+		// Save the selected path for future use
+		mw.saveLastUsedPath(uri.Path())
 
 		games, err := mw.gameManager.ScanFolder(uri.Path())
 		if err != nil {
@@ -350,6 +380,17 @@ func (mw *MainWindow) importGames() {
 		dialog.ShowInformation("Import Complete",
 			fmt.Sprintf("Imported %d new games.", len(games)), mw.window)
 	}, mw.window)
+	
+	// Set the starting location to the last used path
+	if startLocation := mw.getLastUsedPath(); startLocation != "" {
+		if listableURI := storage.NewFileURI(startLocation); listableURI != nil {
+			if listable, ok := listableURI.(fyne.ListableURI); ok {
+				folderDialog.SetLocation(listable)
+			}
+		}
+	}
+	
+	folderDialog.Show()
 }
 
 // addGame shows a dialog to manually add a game
@@ -366,7 +407,7 @@ func (mw *MainWindow) addGame() {
 
 	// Create browse button
 	browseBtn := widget.NewButton("Browse", func() {
-		dialog.ShowFileOpen(func(reader fyne.URIReadCloser, err error) {
+		fileDialog := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 			if err != nil || reader == nil {
 				if err != nil {
 					dialog.ShowError(err, mw.window)
@@ -374,8 +415,22 @@ func (mw *MainWindow) addGame() {
 				return
 			}
 			defer reader.Close()
-			execEntry.SetText(reader.URI().Path())
+			selectedPath := reader.URI().Path()
+			execEntry.SetText(selectedPath)
+			// Save the directory for future use
+			mw.saveLastUsedPath(selectedPath)
 		}, mw.window)
+		
+		// Set the starting location to the last used path
+		if startLocation := mw.getLastUsedPath(); startLocation != "" {
+			if listableURI := storage.NewFileURI(startLocation); listableURI != nil {
+				if listable, ok := listableURI.(fyne.ListableURI); ok {
+					fileDialog.SetLocation(listable)
+				}
+			}
+		}
+		
+		fileDialog.Show()
 	})
 
 	// Create executable selection container
@@ -624,7 +679,7 @@ func (mw *MainWindow) editGame(game *models.Game) {
 
 	// Create browse button for edit dialog
 	browseBtn := widget.NewButton("Browse", func() {
-		dialog.ShowFileOpen(func(reader fyne.URIReadCloser, err error) {
+		fileDialog := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 			if err != nil || reader == nil {
 				if err != nil {
 					dialog.ShowError(err, mw.window)
@@ -632,8 +687,22 @@ func (mw *MainWindow) editGame(game *models.Game) {
 				return
 			}
 			defer reader.Close()
-			execEntry.SetText(reader.URI().Path())
+			selectedPath := reader.URI().Path()
+			execEntry.SetText(selectedPath)
+			// Save the directory for future use
+			mw.saveLastUsedPath(selectedPath)
 		}, mw.window)
+		
+		// Set the starting location to the last used path
+		if startLocation := mw.getLastUsedPath(); startLocation != "" {
+			if listableURI := storage.NewFileURI(startLocation); listableURI != nil {
+				if listable, ok := listableURI.(fyne.ListableURI); ok {
+					fileDialog.SetLocation(listable)
+				}
+			}
+		}
+		
+		fileDialog.Show()
 	})
 
 	// Create executable selection container
@@ -926,12 +995,12 @@ func (mw *MainWindow) checkAllUpdates() {
 
 			if game.SourceURL != "" {
 				updateInfo, err := mw.monitor.CheckForUpdates(game)
-				if err == nil && updateInfo.HasUpdate {
+				if err == nil {
 					game.UpdateInfo(updateInfo.Version)
 					game.MarkChecked()
 
-					// Show notification
-					if mw.settings.Notifications {
+					// Show notification only if there's an update
+					if updateInfo.HasUpdate && mw.settings.Notifications {
 						dialog.ShowInformation("Update Available",
 							fmt.Sprintf("%s has an update available: %s", game.Name, updateInfo.Version), mw.window)
 					}
